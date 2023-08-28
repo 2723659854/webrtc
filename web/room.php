@@ -71,9 +71,10 @@
 <body>
 
 <div class="videos">
-    <video id="localVideo" autoplay style="width:800px;height:400px;" muted="true"></video>
+    <video id="localVideo" autoplay style="width:800px;height:400px;margin: 10px" controls></video>
     <br>
-    <video id="remoteVideo" autoplay style="width:800px;height:400px;"></video>
+
+    <video id="remoteVideo" autoplay style="width:800px;height:400px;margin: 10px" controls></video>
 <!--    class="hidden"-->
 </div>
 
@@ -115,6 +116,10 @@
         }).then(function (stream) {
             /** 获取用户的媒体成功后，将媒体赋值给本地视频框 */
             localVideo.srcObject = stream;
+            /** 设置音量无效 */
+            localVideo.volume = 0.8;
+            /** 自动播放 无效 */
+            localVideo.play()
             /** 保存本地媒体数据流 */
             localStream = stream;
             /** 给本地媒体窗口绑定loadedmetadata事件，就是媒体数据加载完成后触发 */
@@ -122,6 +127,7 @@
                 /** 发布事件客户端连接 client-call */
                 publish('client-call', null)
             });
+
         }).catch(function (e) {
             alert(e);
         });
@@ -247,7 +253,7 @@
             /** 添加流媒体 */
             pc.addStream(localStream);
         } catch (e) {
-            /** 获取所有的摄像头 */
+            /** 获取所有的摄像头 js获取摄像头权限实现拍照功能 https://blog.csdn.net/qq_45279180/article/details/111030620*/
             var tracks = localStream.getTracks();
             /** 将这些摄像头添加到本地流中 */
             for (var i = 0; i < tracks.length; i++) {
@@ -262,6 +268,11 @@
         };
     }
 
+    /**
+     * 发布消息
+     * @param event
+     * @param data
+     */
     function publish(event, data) {
         ws.send(JSON.stringify({
             cmd:'publish',
@@ -271,6 +282,10 @@
         }));
     }
 
+    /**
+     * 订阅消息
+     * @param subject
+     */
     function subscribe(subject) {
         ws.send(JSON.stringify({
             cmd:'subscribe',
@@ -278,6 +293,11 @@
         }));
     }
 
+    /**
+     * 解析路由
+     * @param name
+     * @returns {string|null}
+     */
     function getUrlParam(name) {
         var reg = new RegExp("(^|&)" + name + "=([^&]*)(&|$)");
         var r = window.location.search.substr(1).match(reg);

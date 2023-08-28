@@ -42,7 +42,7 @@ error_reporting(E_ALL);
                         }
                         /** 解码接收到的数据 */
                         $data = json_decode($frame->data, true);
-                        // var_dump($data);
+                        var_dump($data);
                         /** 解析对面的命令 */
                         switch ($data['cmd']) {
                             // 订阅主题

@@ -1,4 +1,4 @@
-搭建turn 服务器
+搭建turn 服务器 就是内网穿透
 https://blog.csdn.net/Marclew_/article/details/129300377
 默认的账户密码
 user=kurento:kurento
@@ -12,3 +12,9 @@ git@github.com:swoole-plus/webrtc.git
 原因是webrtc协议可以不通过点对点通信，不经过服务器
 https://zhuanlan.zhihu.com/p/620151492
 这个websocket服务好像就只用来建立连接的时候有用，当两个客户端连接建立成功之后，就不需要客户端了
+=========================================
+webrtc服务的相关材料
+https://blog.csdn.net/qq_44476091/article/details/126505032
+https://blog.csdn.net/yinshipin007/article/details/124333112
+https://blog.csdn.net/ZYY6569XSW/article/details/130214048
+
