@@ -11,8 +11,8 @@ error_reporting(E_ALL);
 
 \Swoole\Coroutine\run(
     function () {
-        $server = new Swoole\Coroutine\Http\Server('0.0.0.0', 9509, false);
-//        $server = new Swoole\Coroutine\Http\Server('0.0.0.0', 9509, true);
+        $server = new Swoole\Coroutine\Http\Server('0.0.0.0', 9504, false);
+//        $server = new Swoole\Coroutine\Http\Server('0.0.0.0', 9504, true);
 //        $server->set(
 //            [
 //                'ssl_key_file' => __DIR__ . '/config/ssl.key',

@@ -67,8 +67,9 @@
 <body>
 
 <div class="videos">
-    <video id="localVideo" autoplay style="width:200px;height:100px;" muted="true"></video>
-    <video id="remoteVideo" autoplay style="width:200px;height:100px;"></video>
+    <video id="localVideo" autoplay style="width:800px;height:400px;" muted="true"></video>
+    <br>
+    <video id="remoteVideo" autoplay style="width:800px;height:400px;"></video>
 <!--    class="hidden"-->
 </div>
 
@@ -96,7 +97,7 @@
     ws.onopen = function(){
         console.log('ws连接');
         subscribe(subject);
-        navigator.mediaDevices.getUserMedia({
+        navigator.mediaDevices.getDisplayMedia({
             audio: true,
             video: true
         }).then(function (stream) {
@@ -173,20 +174,30 @@
     const remoteVideo = document.getElementById('remoteVideo');
 
     navigator.getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+
+    // $(function (){
+    //     alert("页面加载完毕")
+    //
+    // })
+
     const configuration = {
         iceServers: [{
             urls: [
                 'turn:business.swoole.com:3478?transport=udp',
-                'turn:business.swoole.com:3478?transport=tcp'
+                'turn:business.swoole.com:3478?transport=tcp',
+                /** 本地的打洞服务 */
+                //'turn:localhost:3478?transport=udp',
+                //'turn:localhost:3478?transport=tcp',
             ],
-            username: 'ceshi',
-            credential: 'ceshi'
+            username: 'kurento',
+            credential: 'kurento'
         }]
     };
     var pc, localStream;
 
     function icecandidate(localStream) {
-        pc = new RTCPeerConnection(configuration);
+        //pc = new RTCPeerConnection(configuration);
+        pc = new RTCPeerConnection();
         pc.onicecandidate = function (event) {
             if (event.candidate) {
                 publish('client-candidate', event.candidate);

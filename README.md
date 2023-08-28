@@ -19,4 +19,4 @@ git clone git@github.com:swoole-plus/webrtc.git
 php server.php
 ```
 
-3. 访问：http://127.0.0.1:9509
+3. 访问：http://127.0.0.1:9504
