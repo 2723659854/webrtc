@@ -113,3 +113,7 @@ vi etc/turnserver.conf
     如果延迟超过1秒，就要检查网络是否有问题，检查设备问题，检查浏览器或者播放器问题。速度快的原因是：web-rtc底层使用的是udp协议，而rtmp,hls,flv都是使用的tcp，udp没有那么复杂的握手环节，也不校验
     数据包是否完整，丢包也不会重发，所以速度就很快了。<br>
     rtsp协议：还在研究中
+15. 电脑端测试效果<br>
+<img src="./computer1.png" alt="电脑端效果图" style="width:800px;height:600px">
+16. 手机端测试效果<br>
+<img src="./phone1.jpg" alt="手机端效果图" style="width:500px;height:850px">
