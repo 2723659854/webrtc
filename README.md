@@ -20,6 +20,7 @@ git clone git@github.com:2723659854/webrtc.git
 php server.php
 ```
 
+
 3. 本地访问：http://127.0.0.1:9504
 4. 若需要局域网内访问，需要修改两个文件，一个是./config.php的ws地址配置，改成局域网地址，并且是wss协议
    否则浏览器无法通信，同时./server.php里面创建http服务的地方要开启ssl，取消ssl文件位置注释，否则浏览器 无法获取摄像头麦克风设备，无法获取媒体采集设备。
@@ -89,21 +90,38 @@ vi etc/turnserver.conf
    华为浏览器：本地正常，对端正常<br>
    百度浏览器：本地正常，对端正常<br>
    edge浏览器：本地正常，对端正常<br>
-9. 参考资料<br>
-   webrtc服务的相关材料 <br>
-   https://blog.csdn.net/qq_44476091/article/details/126505032  <br>
-   https://blog.csdn.net/yinshipin007/article/details/124333112 <br>
-   https://blog.csdn.net/ZYY6569XSW/article/details/130214048 <br>
-10. 笔记<br>
+9. 项目运行流程
+```text
+1，首先是A客户端连接上ws之后，客户端创建本地媒体资源，A创建成功之后，发布客户端上线事件client-call
+2，B客户端接收到上线事件client-call后，创建一个rtc客户端，绑定本地媒体资源，
+然后广播自己的节点信息client-candidate。
+3，A客户端收到client-candidate后，保存B的节点信息。
+4，B客户端创建描述符信息，先自己保存，然后广播发送client-offer
+5，A客户端收到client-offer，创建rtc客户端连接，绑定本地的媒体资源，
+广播自己的节点client-candidate，
+6，B客户端收到client-candidate信息后，保存A的节点信息。
+7，A客户端保存B客户端的描述信息offer，然后创建并保存回答信息，就是描述符，
+然后广播自己的描述符信息，client-answer
+8，B客户端收到client-answer消息后，保存A客户端的answer消息，
+9，连接建立完成，
+```
+10. 流程图
+<img src="./webrtc.png" alt="流程图" >
+11. 参考资料<br>
+    webrtc服务的相关材料 <br>
+    https://blog.csdn.net/qq_44476091/article/details/126505032  <br>
+    https://blog.csdn.net/yinshipin007/article/details/124333112 <br>
+    https://blog.csdn.net/ZYY6569XSW/article/details/130214048 <br>
+12. 笔记<br>
     webrtc主要依赖的是JavaScript，基本上各大浏览器已经支持webrtc浏览器了。<br>
     运行原理：<br>PHP提供ws服务，当两个客户端通过ws服务获知对方地址并建立连接之后，客户端之间是点对点连接，不再依赖ws服务。客户端之间直接点对点传输媒体数据。 只要不刷新页面，两个客户端可以一直通信。
     <br>
     PHP主要负责提供http服务，ws服务，网关服务。JavaScript负责提供webrtc服务。<br>
     webrtc协议和rtmp，flv,hls协议不同之处是，webrtc是点对点传输数据，不需要服务器转发。<br>
-11. 当然了，如果是多人场景，比如会议，多人直播，那是需要内网穿透的。
-12. 关于直播
-13. 推流：默认都是rtmp。一般使用obs客户端，FFmpeg客户端，也可以使用第三方推流软件，或者使用腾讯，华为等第三方的sdk自己开发推流软件。
-14. 拉流：<br>
+13. 当然了，如果是多人场景，比如会议，多人直播，那是需要内网穿透的。
+14. 关于直播
+15. 推流：默认都是rtmp。一般使用obs客户端，FFmpeg客户端，也可以使用第三方推流软件，或者使用腾讯，华为等第三方的sdk自己开发推流软件。
+16. 拉流：<br>
     rtmp协议：部分播放器是支持rtmp协议，可以直接播放。rtmp延迟一般是1秒-3秒，速度很快。但是似乎浏览器都不支持rtmp协议拉流。<br>
     hls协议：浏览器和播放器基本都支持拉流，但是hls是将媒体数据切片，然后传输，延迟很高。hls协议严格意义上说算不上实时直播，延迟至少是5秒，一般是15-35秒左右， 而且hls如果解码速度不够快的情况，
     延迟会累加，延迟最高可以达到1小时。如果用于直播pk场景，在线教学场景，游戏场景，会议场景，等对方收到消息，黄花菜都凉了。<br>
@@ -113,7 +131,7 @@ vi etc/turnserver.conf
     如果延迟超过1秒，就要检查网络是否有问题，检查设备问题，检查浏览器或者播放器问题。速度快的原因是：web-rtc底层使用的是udp协议，而rtmp,hls,flv都是使用的tcp，udp没有那么复杂的握手环节，也不校验
     数据包是否完整，丢包也不会重发，所以速度就很快了。<br>
     rtsp协议：还在研究中
-15. 电脑端测试效果<br>
-<img src="./computer1.png" alt="电脑端效果图" style="width:800px;height:600px">
-16. 手机端测试效果<br>
-<img src="./phone1.jpg" alt="手机端效果图" style="width:500px;height:850px">
+17. 电脑端测试效果<br>
+<img src="./computer1.png" alt="电脑端效果图" style="width:400px;height:200px">
+18. 手机端测试效果<br>
+<img src="./phone1.jpg" alt="手机端效果图" style="width:200px;height:400px">

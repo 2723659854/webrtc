@@ -1,4 +1,4 @@
-<?php include __DIR__ . '/../config.php'?>
+<?php include __DIR__ . '/../config.php' ?>
 <!DOCTYPE html>
 <html>
 <head>
@@ -71,11 +71,11 @@
 <body>
 
 <div class="videos">
-    <video id="localVideo" autoplay style="width:800px;height:400px;margin: 10px" controls ></video>
+    <video id="localVideo" autoplay style="width:800px;height:400px;margin: 10px" controls></video>
     <br>
 
-    <video id="remoteVideo" autoplay style="width:800px;height:400px;margin: 10px" controls ></video>
-<!--    class="hidden"-->
+    <video id="remoteVideo" autoplay style="width:800px;height:400px;margin: 10px" controls></video>
+    <!--    class="hidden"-->
 </div>
 
 <script src="assets/js/jquery-3.2.1.min.js"></script>
@@ -103,18 +103,18 @@
 
     // 基于订阅，把房间id作为主题
     /** 相当于注册事件，订阅事件 */
-    var subject = 'private-video-room-'+cid;
+    var subject = 'private-video-room-' + cid;
 
     /** 建立与websocket的连接 */
     var ws = new WebSocket(WS_ADDRESS);
     // console.log(ws);
-    ws.onopen = function(){
+    ws.onopen = function () {
         console.log('ws连接成功');
         /** 订阅信道 ，订阅通道 */
         subscribe(subject);
-        /** 获取正在使用的媒体设备，这里会弹出对话框让用户选择需要分享的窗口，可以选择浏览器的某一个标签，可以使命令行窗口，可以使打开的文档，编辑器等等 */
-        //navigator.mediaDevices.getDisplayMedia({
-        //navigator.mediaDevices.getUserMedia({
+        /** 获取正在使用的媒体设备，这里会弹出对话框让用户选择需要分享的窗口，可以选择浏览器的某一个标签，可以使命令行窗口，可以使打开的文档，编辑器,整个桌面等等 */
+        //navigator.mediaDevices.getDisplayMedia({ 正在使用的媒体设备
+        //navigator.mediaDevices.getUserMedia({ 摄像头
         if (isMobile) {
             /** 手机端 */
             navigator.mediaDevices.getUserMedia({
@@ -122,7 +122,7 @@
                 audio: true,
                 /** 获取视频 */
                 video: true
-                /** 某些*/
+                /** 某些浏览器切换摄像头不起作用 */
                 /*video:{
                     /!** user 前置 environment 后置 *!/
                     facingMode: 'environment'
@@ -131,10 +131,10 @@
             }).then(function (stream) {
                 /** 获取用户的媒体成功后，将媒体赋值给本地视频框 */
                 localVideo.srcObject = stream;
-                /** 设置音量无效 */
-                localVideo.volume = 0.8;
-                /** 自动播放 无效 */
-                localVideo.play()
+                /** 设置音量:无效 */
+                //localVideo.volume = 0.8;
+                /** 自动播放:无效 */
+                //localVideo.play()
                 /** 保存本地媒体数据流 */
                 localStream = stream;
                 /** 给本地媒体窗口绑定loadedmetadata事件，就是媒体数据加载完成后触发 */
@@ -146,7 +146,7 @@
             }).catch(function (e) {
                 alert(e);
             });
-        }else{
+        } else {
             navigator.mediaDevices.getDisplayMedia({
                 /** 获取音频 */
                 audio: true,
@@ -156,9 +156,9 @@
                 /** 获取用户的媒体成功后，将媒体赋值给本地视频框 */
                 localVideo.srcObject = stream;
                 /** 设置音量无效 */
-                localVideo.volume = 0.8;
+                //localVideo.volume = 0.8;
                 /** 自动播放 无效 */
-                localVideo.play()
+                //localVideo.play()
                 /** 保存本地媒体数据流 */
                 localStream = stream;
                 /** 给本地媒体窗口绑定loadedmetadata事件，就是媒体数据加载完成后触发 */
@@ -174,28 +174,27 @@
 
     };
     /** ws的接收到消息事件 */
-    ws.onmessage = function(e){
+    ws.onmessage = function (e) {
         /** 解析json字符串 */
         var package = JSON.parse(e.data);
         /** 获取数据 */
         var data = package.data;
         /** 根据事件类型处理消息逻辑 */
         switch (package.event) {
-            /** 客户端请求连接事件 */
+            /** 客户端上线事件 */
             case 'client-call':
                 console.log('call');
-                /** 获取本地的流媒体资源，可以是浏览器，*/
+                /** 创建rtc连接，将本地节点广播给其他客户端，将本地流媒体绑定到rtc连接，然后绑定接收到对端媒体资源事件（播放） */
                 icecandidate(localStream);
-                /** 获取本地流媒体传输参数， */
+                /** 生成本地描述符，包括媒体格式和通道，以确保两端都能够理解并使用相同的媒体格式进行通信 */
                 pc.createOffer({
-                    offerToReceiveAudio: 1,/** 愿意接收对方的音频数据 */
+                    offerToReceiveAudio: 1, /** 愿意接收对方的音频数据 */
                     offerToReceiveVideo: 1/** 愿意 接收对方的视频数据 */
-                }).then(function (desc) {
-                    /** ICE 是 WebRTC 中的一种网络协议，用于在浏览器之间建立点对点的 P2P 连接。ICE 候选者是在连接建立过程中，浏览器向对方浏览器发送的一组候选者信息，包括 IP 地址、端口号等。*/
-                    /** 就是将对方设置为候选者 ，保存对方的ip ,端口，然后才能点对点的通信 ，否则不能实现点对点的通信，只能使用服务器中转消息 */
+                }).then(function (desc) {/** 获取描述符成功后 */
+                    /** 保存自己的描述符 */
                     pc.setLocalDescription(desc).then(
                         function () {
-                            /** 然后发布client-offer事件 ,发布本地流媒体的描述，通知其他客户端说，我上线了 */
+                            /** 然后发布client-offer事件 ,发布本地流媒体的描述信息，*/
                             publish('client-offer', pc.localDescription);
                         }
                     ).catch(function (e) {
@@ -206,50 +205,58 @@
                 });
                 break;
             case 'client-answer':
+                /** 收到对方客户端返回的描述符信息 */
                 console.log('answer');
-                /** 应答事件，设置远程客户端描述，就是保存远程客户端的ip端口等信息  */
-                pc.setRemoteDescription(new RTCSessionDescription(data),function(){}, function(e){
+                /** 保存对方的描述符信息  */
+                pc.setRemoteDescription(new RTCSessionDescription(data), function () {
+                }, function (e) {
                     /** 使用的session来保存的 */
                     alert(e);
                 });
                 break;
+            /** 接收到其他客户度发送的描述符信息 */
             case 'client-offer':
                 console.log('offer');
-
+                /** 我收到了别人发送的描述信息后，我还需要再次发送我自己的节点信息 */
                 icecandidate(localStream);
-                /** 对面有客户端上线 */
-                pc.setRemoteDescription(new RTCSessionDescription(data), function(){
-                    /** 如果没有和我对话的客户端 */
+                /** 收到对面的描述符信息之后，保存 */
+                pc.setRemoteDescription(new RTCSessionDescription(data), function () {
+                    /** 如果还没有和我对话的客户端 */
                     if (!answer) {
-                        /** 创建一个会话的对象 */
+                        /** 创建一个回答，回答对面客户端，告诉对方本地的描述符 */
                         pc.createAnswer(function (desc) {
-                            /** 将对方的信息保存到本地 */
+                                /** 保存自己的描述符 */
                                 pc.setLocalDescription(desc, function () {
-                                    /** 发布客户端回答事件 */
+                                    /** 然后将自己的描述符告知其他的客户端 */
                                     publish('client-answer', pc.localDescription);
-                                }, function(e){
+                                }, function (e) {
                                     alert(e);
                                 });
                             }
-                        ,function(e){
-                            alert(e);
-                        });
+                            , function (e) {
+                                alert(e);
+                            });
                         answer = 1;
                     }
-                }, function(e){
+                }, function (e) {
                     alert(e);
                 });
                 break;
 
             case 'client-candidate':
+                /** 收到了其他客户端广播的节点信息 */
                 console.log('candidate');
-                /** 添加对方的网络信息  */
-                pc.addIceCandidate(new RTCIceCandidate(data), function(){}, function(e){alert(e);});
+                /** 保存对方客户端的节点信息  */
+                pc.addIceCandidate(new RTCIceCandidate(data), function () {
+                }, function (e) {
+                    alert(e);
+                });
                 break;
         }
     };
-
+    /** 本地流媒体播放窗口 */
     const localVideo = document.getElementById('localVideo');
+    /** 远程客户端流媒体播放窗口 */
     const remoteVideo = document.getElementById('remoteVideo');
     /** 设置getUserMedia ，因为有些浏览器不兼容 */
     navigator.getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
@@ -269,16 +276,23 @@
     };
     var pc, localStream;
 
+    /** ICE（Interactive Connectivity Establishment）是 WebRTC 中的一个重要概念，它是一种用于在浏览器之间建立实时通信连接的技术。ICE 是一种网络协议，用于确定浏览器之间可用的最佳网络路径，并在它们之间建立连接。
+     ICE 通过使用各种网络协议和技术（如 STUN 和 TURN）来实现这一目标。它允许浏览器检测网络环境，并确定哪些网络协议和技术最适合于建立连接。ICE 还提供了一种方法，用于确定浏览器之间的最佳网络路径，并在它们之间建立高质量的连接。
+     ICE 的主要目标是使实时通信更加可靠和高效，并允许浏览器在不同的网络条件下建立连接。它是 WebRTC 技术的重要组成部分，对于实现浏览器之间的实时通信至关重要。*/
+
     /**
      * ice服务的候选节点
      * 就是中间件服务器
+     * 这个方法的作用是，创建rtc连接，获取本地节点信息，然后广播给其他的客户端，然后把本地的流媒体数据添加到rtc连接中（需要发送给其他客户端），
+     * 最后注册接收到流媒体事件（收到流媒体数据后就播放）
      * @param localStream
      */
     function icecandidate(localStream) {
         /** 使用turn打洞服务作为数据中转服务器，创建连接 */
         //pc = new RTCPeerConnection(configuration);
+        /** 调用rtc协议 */
         pc = new RTCPeerConnection();
-        /** 获取到候选节点数据之后 */
+        /** 设置完本地的sdp信息之后，把自己的节点信息广播出去，节点信息包括版本号，用户名，IP地址，端口，网络类型，session_id */
         pc.onicecandidate = function (event) {
             /** 如果有节点，则广播这个节点 */
             if (event.candidate) {
@@ -286,30 +300,25 @@
             }
         };
         try {
-            /** 添加流媒体 */
+            /** 把本地的流媒体添加到rtc连接中 */
             pc.addStream(localStream);
         } catch (e) {
+            /** 没有找到资源，那就把本地的所有摄像头都添加到连接中 */
             /** 获取所有的摄像头 js获取摄像头权限实现拍照功能 https://blog.csdn.net/qq_45279180/article/details/111030620*/
             var tracks = localStream.getTracks();
             /** 将这些摄像头添加到本地流中 */
             for (var i = 0; i < tracks.length; i++) {
+                /** 逐个添加摄像头 */
                 pc.addTrack(tracks[i], localStream);
             }
         }
-        /** 添加流媒体成功之后 ，设置远程聊天窗口的src等播放属性 */
+        /**  收到流媒体数据之后，将流媒体数据添加到播放窗口 */
         pc.onaddstream = function (e) {
             // $('#remoteVideo').removeClass('hidden');
             // $('#localVideo').remove();
-            console.log("接收到对端流媒体信息")
+            console.log("接收到对端流媒体信息，开始播放对方媒体数据")
             remoteVideo.srcObject = e.stream;
         };
-        /** 接收到数据流 */
-        pc.ontrack = function (e){
-            if (!remoteVideo.srcObject){
-                remoteVideo.srcObject = e.stream;
-            }
-
-        }
     }
 
     /**
@@ -319,10 +328,10 @@
      */
     function publish(event, data) {
         ws.send(JSON.stringify({
-            cmd:'publish',
+            cmd: 'publish',
             subject: subject,
-            event:event,
-            data:data
+            event: event,
+            data: data
         }));
     }
 
@@ -332,8 +341,8 @@
      */
     function subscribe(subject) {
         ws.send(JSON.stringify({
-            cmd:'subscribe',
-            subject:subject
+            cmd: 'subscribe',
+            subject: subject
         }));
     }
 
@@ -364,6 +373,19 @@
      * 原文链接：https://blog.csdn.net/qq_44476091/article/details/126505032
      * */
 
+    /**
+     * WebRTC 通信的全部流程包括以下步骤：
+     * 1 建立连接：浏览器之间建立 RTCPeerConnection 对象，该对象用于管理 WebRTC 连接。创建offer
+     * 2 交换证书：浏览器交换证书，以确保连接的安全性。一般是ssl证书
+     * 3 协商媒体格式：浏览器之间协商媒体格式，以确定使用哪种音频和视频编码格式进行通信。创建answer
+     * 4 创建媒体轨道：浏览器创建音频和视频轨道，以准备传输媒体数据。
+     * 5 发送媒体数据：浏览器通过 RTCPeerConnection 对象发送媒体数据，对端浏览器接收并播放媒体数据。
+     * 6 实时传输控制协议（RTCP）：浏览器之间使用 RTCP 协议来监控数据传输质量，并进行必要的调整。
+     * 7 结束连接：当通信完成后，浏览器之间关闭 RTCPeerConnection 对象，结束 WebRTC 连接。
+     *
+     * 甲客户端首先创建一个连接，广播自己的节点信息（ip,端口等信息）
+     *
+     * */
 </script>
 </body>
 </html>

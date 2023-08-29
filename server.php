@@ -52,7 +52,7 @@ error_reporting(E_ALL);
                                 subscribe($subject, $resp);
                                 break;
                             // 向某个主题发布消息
-                            /** 发布消息 */
+                            /** 发布消息 ，主要用于web-rtc两个客户端建立连接的时候交换地址用的 ，当客户端建立连接完成之后，传输流媒体文件不走ws ,那么ws服务相当于是网关 */
                             case 'publish':
                                 $subject = $data['subject'];
                                 $event = $data['event'];
@@ -133,6 +133,7 @@ function subscribe($subject, $connection)
 function unsubscribe($subject, $connection)
 {
     global $subject_connnection_map;
+    /** 将客户端从这个渠道中删除 */
     unset($subject_connnection_map[$subject][$connection->fd]);
 }
 
@@ -154,9 +155,9 @@ function publish($subject, $event, $data, $exclude)
         $connection->push(
             json_encode(
                 array(
-                    'cmd' => 'publish',
-                    'event' => $event,
-                    'data' => $data
+                    'cmd' => 'publish',# room.php 中接收到这个数据后，没有使用，可以屏蔽这个数据
+                    'event' => $event,# 事件类型
+                    'data' => $data,# 发送的数据
                 )
             )
         );
