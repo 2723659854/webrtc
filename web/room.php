@@ -71,10 +71,10 @@
 <body>
 
 <div class="videos">
-    <video id="localVideo" autoplay style="width:800px;height:400px;margin: 10px" controls></video>
+    <video id="localVideo" autoplay style="width:800px;height:400px;margin: 10px" controls ></video>
     <br>
 
-    <video id="remoteVideo" autoplay style="width:800px;height:400px;margin: 10px" controls></video>
+    <video id="remoteVideo" autoplay style="width:800px;height:400px;margin: 10px" controls ></video>
 <!--    class="hidden"-->
 </div>
 
@@ -85,7 +85,12 @@
 <script type="text/javascript">
     /** ws 连接地址 */
     var WS_ADDRESS = '<?php echo $SIGNALING_ADDRESS;?>';
-
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+        console.log('当前在手机端');
+    } else {
+        console.log('当前在PC端');
+    }
     // 房间id
     var cid = getUrlParam('cid');
     /** 如果没有房间号 ，则随机生成房间号 */
@@ -108,29 +113,65 @@
         /** 订阅信道 ，订阅通道 */
         subscribe(subject);
         /** 获取正在使用的媒体设备，这里会弹出对话框让用户选择需要分享的窗口，可以选择浏览器的某一个标签，可以使命令行窗口，可以使打开的文档，编辑器等等 */
-        navigator.mediaDevices.getDisplayMedia({
-            /** 获取音频 */
-            audio: true,
-            /** 获取视频 */
-            video: true
-        }).then(function (stream) {
-            /** 获取用户的媒体成功后，将媒体赋值给本地视频框 */
-            localVideo.srcObject = stream;
-            /** 设置音量无效 */
-            localVideo.volume = 0.8;
-            /** 自动播放 无效 */
-            localVideo.play()
-            /** 保存本地媒体数据流 */
-            localStream = stream;
-            /** 给本地媒体窗口绑定loadedmetadata事件，就是媒体数据加载完成后触发 */
-            localVideo.addEventListener('loadedmetadata', function () {
-                /** 发布事件客户端连接 client-call */
-                publish('client-call', null)
-            });
+        //navigator.mediaDevices.getDisplayMedia({
+        //navigator.mediaDevices.getUserMedia({
+        if (isMobile) {
+            /** 手机端 */
+            navigator.mediaDevices.getUserMedia({
+                /** 获取音频 */
+                audio: true,
+                /** 获取视频 */
+                video: true
+                /** 某些*/
+                /*video:{
+                    /!** user 前置 environment 后置*!/
+                    facingMode: 'environment'
+                },*/
 
-        }).catch(function (e) {
-            alert(e);
-        });
+            }).then(function (stream) {
+                /** 获取用户的媒体成功后，将媒体赋值给本地视频框 */
+                localVideo.srcObject = stream;
+                /** 设置音量无效 */
+                localVideo.volume = 0.8;
+                /** 自动播放 无效 */
+                localVideo.play()
+                /** 保存本地媒体数据流 */
+                localStream = stream;
+                /** 给本地媒体窗口绑定loadedmetadata事件，就是媒体数据加载完成后触发 */
+                localVideo.addEventListener('loadedmetadata', function () {
+                    /** 发布事件客户端连接 client-call */
+                    publish('client-call', null)
+                });
+
+            }).catch(function (e) {
+                alert(e);
+            });
+        }else{
+            navigator.mediaDevices.getDisplayMedia({
+                /** 获取音频 */
+                audio: true,
+                /** 获取视频 */
+                video: true
+            }).then(function (stream) {
+                /** 获取用户的媒体成功后，将媒体赋值给本地视频框 */
+                localVideo.srcObject = stream;
+                /** 设置音量无效 */
+                localVideo.volume = 0.8;
+                /** 自动播放 无效 */
+                localVideo.play()
+                /** 保存本地媒体数据流 */
+                localStream = stream;
+                /** 给本地媒体窗口绑定loadedmetadata事件，就是媒体数据加载完成后触发 */
+                localVideo.addEventListener('loadedmetadata', function () {
+                    /** 发布事件客户端连接 client-call */
+                    publish('client-call', null)
+                });
+
+            }).catch(function (e) {
+                alert(e);
+            });
+        }
+
     };
     /** ws的接收到消息事件 */
     ws.onmessage = function(e){

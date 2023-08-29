@@ -12,15 +12,15 @@ error_reporting(E_ALL);
 /** 开启一个协程 */
 \Swoole\Coroutine\run(
     function () {
-        /** 开启一个http服务 */
-        $server = new Swoole\Coroutine\Http\Server('0.0.0.0', 9504, false);
-//        $server = new Swoole\Coroutine\Http\Server('0.0.0.0', 9504, true);
-//        $server->set(
-//            [
-//                'ssl_key_file' => __DIR__ . '/config/ssl.key',
-//                'ssl_cert_file' => __DIR__ . '/config/ssl.crt',
-//            ]
-//        );
+        /** 开启一个http服务 ,如果使用127.0.0.1访问，就不开启ssl，如果使用局域网或者外网，则必须使用ssl，否则无法调用摄像头和麦克风 */
+        //$server = new Swoole\Coroutine\Http\Server('0.0.0.0', 9504, false);
+        $server = new Swoole\Coroutine\Http\Server('0.0.0.0', 9504, true);
+        $server->set(
+            [
+                'ssl_key_file' => __DIR__ . '/config/ssl.key',
+                'ssl_cert_file' => __DIR__ . '/config/ssl.crt',
+            ]
+        );
 
         /** 逻辑处理函数 */
         $server->handle(
