@@ -124,7 +124,7 @@
                 video: true
                 /** 某些*/
                 /*video:{
-                    /!** user 前置 environment 后置*!/
+                    /!** user 前置 environment 后置 *!/
                     facingMode: 'environment'
                 },*/
 
@@ -251,22 +251,17 @@
 
     const localVideo = document.getElementById('localVideo');
     const remoteVideo = document.getElementById('remoteVideo');
-
+    /** 设置getUserMedia ，因为有些浏览器不兼容 */
     navigator.getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
-
-    // $(function (){
-    //     alert("页面加载完毕")
-    //
-    // })
-
+    /** 内网穿透turn连接配置 */
     const configuration = {
         iceServers: [{
             urls: [
-                'turn:business.swoole.com:3478?transport=udp',
-                'turn:business.swoole.com:3478?transport=tcp',
-                /** 本地的打洞服务 */
-                //'turn:localhost:3478?transport=udp',
-                //'turn:localhost:3478?transport=tcp',
+                // 'turn:business.swoole.com:3478?transport=udp',
+                // 'turn:business.swoole.com:3478?transport=tcp',
+                /** 本地的打洞服务,就是内网穿透 ，根据需求设置，请使用你自己的配置 ，如果是本地或者局域网则不需要使用内网穿透 */
+                'turn:192.168.4.120:3478?transport=udp',
+                'turn:192.168.4.120:3478?transport=tcp',
             ],
             username: 'kurento',
             credential: 'kurento'
@@ -305,8 +300,16 @@
         pc.onaddstream = function (e) {
             // $('#remoteVideo').removeClass('hidden');
             // $('#localVideo').remove();
+            console.log("接收到对端流媒体信息")
             remoteVideo.srcObject = e.stream;
         };
+        /** 接收到数据流 */
+        pc.ontrack = function (e){
+            if (!remoteVideo.srcObject){
+                remoteVideo.srcObject = e.stream;
+            }
+
+        }
     }
 
     /**
