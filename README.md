@@ -1,11 +1,12 @@
 # webrtc 视频会话 demo
 
-## 本地测试
+## 说在前面的话
 
-声明：本项目参考git@github.com:swoole-plus/webrtc.git <br>
-项目地址：https://github.com/swoole-inc/webrtc <br>
 本项目只用于学习和测试，其他用途概不负责。本项目对元项目的部分代码进行了 注释和修改，用于研究webrtc协议。
-
+为什么要弄web-rtc呢，应为只需要php配合JavaScript就可以了，不需要配置服务器，而且传输性能比较好，延迟在1秒以内。
+web-rtc是已经被封装好的，直接调用接口就行，其他的协议，比如rtmp，rtsp，flv,hls，PHP官方是不支持这些协议的，需要自己
+使用tcp或者udp协议实现，可以使用workman，swoole，reactphp这些成熟的框架来实现，也可以自己用原生的PHP实现，不过感觉协议
+太复杂了，心智负担太重了。
 1. 依赖扩展
 
 * ext-json
@@ -130,8 +131,6 @@ vi etc/turnserver.conf
     web-rtc协议：这个主要就是为了浏览器设置的（如果某个浏览器不支持，那是浏览器厂商的问题，web-rtc属于标准协议，浏览器必须支持），也支持部分播放器，如果不支持就使用第三方SDK，比如腾讯，华为，阿里的sdk。web-rtc的速度是最快的，延迟在毫秒级别，
     如果延迟超过1秒，就要检查网络是否有问题，检查设备问题，检查浏览器或者播放器问题。速度快的原因是：web-rtc底层使用的是udp协议，而rtmp,hls,flv都是使用的tcp，udp没有那么复杂的握手环节，也不校验
     数据包是否完整，丢包也不会重发，所以速度就很快了。<br>
-    rtsp协议：还在研究中
-17. 电脑端测试效果<br>
-<img src="./computer1.png" alt="电脑端效果图" style="width:400px;height:200px">
-18. 手机端测试效果<br>
-<img src="./phone1.jpg" alt="手机端效果图" style="width:200px;height:400px">
+    rtsp协议：这个主要是用来做监控用的，比如摄像头监控。可以使用VLC插件播放，浏览器不能直接播放，需要将rtsp转码为flv或者mp4才可以播放。延迟一般是3秒。
+17. 效果图见项目根目录的computer1.png和phone1.jpg两张截图。
+
