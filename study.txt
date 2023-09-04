@@ -38,6 +38,9 @@ uc浏览器：直接显示没有权限，其实浏览器已经开启了权限，
 edge浏览器：本地正常，对端正常
 ===============================================
 webrtc 接口文档：https://developer.mozilla.org/zh-CN/docs/Web/API/RTCPeerConnection
+https://developer.mozilla.org/zh-CN/docs/Web/API/WebRTC_API
+
+https://github.com/webrtc/samples/tree/gh-pages/src/content/peerconnection/multiple
 
 
 
