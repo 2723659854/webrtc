@@ -7,6 +7,8 @@
 web-rtc是已经被封装好的，直接调用接口就行，其他的协议，比如rtmp，rtsp，flv,hls，PHP官方是不支持这些协议的，需要自己
 使用tcp或者udp协议实现，可以使用workman，swoole，reactphp这些成熟的框架来实现，也可以自己用原生的PHP实现，不过感觉协议
 太复杂了，心智负担太重了。
+
+
 1. 依赖扩展
 
 * ext-json
@@ -133,4 +135,11 @@ vi etc/turnserver.conf
     数据包是否完整，丢包也不会重发，所以速度就很快了。<br>
     rtsp协议：这个主要是用来做监控用的，比如摄像头监控。可以使用VLC插件播放，浏览器不能直接播放，需要将rtsp转码为flv或者mp4才可以播放。延迟一般是3秒。 <br>
 17. 效果图见项目根目录的computer1.png和phone1.jpg两张截图。 <br>
+### 关于rtmp
+
+rtmp服务端已经实现，参考我的项目<a href="https://github.com/2723659854/rtmp_server">xiaosongshu/rtmp_server</a>，
+安装命令：
+```bash
+composer create-project xiaosongshu/rtmp_server
+```
 
