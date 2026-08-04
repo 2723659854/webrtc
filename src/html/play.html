@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC 拉流播放</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; color: #e0e0e0; padding: 20px; }
+        .container { max-width: 700px; margin: 0 auto; }
+        h1 { margin-bottom: 10px; }
+        .subtitle { color: #888; margin-bottom: 15px; font-size: 0.9em; }
+        .controls { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+        .btn { padding: 10px 20px; border: none; border-radius: 6px; font-size: 0.95em; cursor: pointer; font-weight: 500; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-start { background: #4cc9f0; color: #000; }
+        .btn-stop { background: #f72585; color: #fff; }
+        .status { padding: 10px; border-radius: 6px; text-align: center; font-weight: bold; margin-bottom: 15px; }
+        .status.idle { background: #1a1a2e; color: #666; }
+        .status.connecting { background: #2a1a0a; color: #ff9f1c; }
+        .status.playing { background: #0a2a1a; color: #06d6a0; }
+        .status.failed { background: #2a0a0a; color: #f72585; }
+        .video-box { background: #000; border: 1px solid #2a2a3e; border-radius: 8px; padding: 8px; margin-bottom: 10px; display: flex; justify-content: center; }
+        .video-box video { width: 100%; max-height: 400px; border-radius: 4px; background: #111; }
+        .log-box { background: #000; border: 1px solid #2a2a3e; border-radius: 8px; padding: 12px; margin-top: 15px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.8em; }
+        .log-box .time { color: #555; }
+        .log-box .info { color: #ccc; }
+        .log-box .warn { color: #ff9f1c; }
+        .log-box .success { color: #06d6a0; }
+        .log-box .error { color: #f72585; }
+        /* ===== 协商结果面板（和 push 端完全一致，10px 浅灰标题） ===== */
+        .codec-panel {
+            background: #11111f;
+            border: 1px solid #2a2a3e;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-top: 12px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px 14px;
+            font-family: monospace;
+            font-size: 0.82em;
+        }
+        .codec-panel .title-hint {
+            grid-column: 1 / -1;
+            color: #777;
+            font-size: 10px;   /* 10px 极小灰色提示，非侵入 */
+            letter-spacing: 0.5px;
+        }
+        .codec-panel .label { color: #999; font-size: 11px; }
+        .codec-panel .value.video { color: #4cc9f0; font-weight: bold; }
+        .codec-panel .value.audio { color: #06d6a0; font-weight: bold; }
+        .codec-panel .value.bad   { color: #f72585; font-weight: bold; }
+        .codec-panel .value.warn  { color: #f6bd60; font-weight: bold; }
+        .codec-panel .pt { color: #888; margin-left: 6px; font-weight: normal; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>📥 拉流播放</h1>
+    <p class="subtitle">观看房间 <span id="roomIdDisplay">stream_001</span> 的屏幕共享</p>
+    <div class="controls">
+        <button class="btn btn-start" id="btnStart" onclick="startPlay()">▶ 开始观看</button>
+        <button class="btn btn-stop" id="btnStop" onclick="stopPlay()" disabled>■ 停止</button>
+    </div>
+    <div class="status idle" id="status">⚪ 空闲</div>
+    <div class="video-box"><video id="remoteVideo" autoplay playsinline></video></div>
+    <div class="log-box" id="logBox"></div>
+
+    <!-- ===== 协商结果显示面板（下行：收到的 server offer vs 实际接收 codec） ===== -->
+    <div class="codec-panel" id="codecPanel" style="display:none;">
+        <div class="title-hint">📡 当前协商编码 + 接收统计（用于排查黑屏/无声）</div>
+        <div>
+            <div class="label">📹 视频 · SFU Offer 声明</div>
+            <div class="value video" id="cvSdp">-</div>
+        </div>
+        <div>
+            <div class="label">📹 视频 · 实际编码 (getStats)</div>
+            <div class="value video" id="cvReal">-</div>
+        </div>
+        <div>
+            <div class="label">📹 视频 · 接收包数</div>
+            <div class="value video" id="cvPkts">-</div>
+        </div>
+        <div>
+            <div class="label">📹 视频 · 接收字节</div>
+            <div class="value video" id="cvBytes">-</div>
+        </div>
+        <div>
+            <div class="label">🎞  视频 · 解码帧数</div>
+            <div class="value video" id="cvFrames">-</div>
+        </div>
+        <div>
+            <div class="label">🎵 音频 · SFU Offer 声明</div>
+            <div class="value audio" id="caSdp">-</div>
+        </div>
+        <div>
+            <div class="label">🎵 音频 · 实际编码 (getStats)</div>
+            <div class="value audio" id="caReal">-</div>
+        </div>
+        <div>
+            <div class="label">🎵 音频 · 接收包数</div>
+            <div class="value audio" id="caPkts">-</div>
+        </div>
+        <div>
+            <div class="label">🎵 音频 · 接收字节</div>
+            <div class="value audio" id="caBytes">-</div>
+        </div>
+        <div>
+            <div class="label">🔊 音频 · 播放采样数</div>
+            <div class="value audio" id="caSamples">-</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const ROOM_ID = 'stream_001';
+    const WS_URL = `ws://${location.hostname}:8088`;
+
+    let pc = null, ws = null;
+    let isPlaying = false, joined = false;
+
+    // ====== 单次渲染锁（顶层作用域，createPeerConnection/startPlay/stopPlay 均能访问） ======
+    //   防止 audio/video 两次 ontrack 重复 set srcObject 打断 play()
+    //   必须放顶层，因为 createPeerConnection 是独立函数（ontrack 回调在其闭包内），访问不到 startPlay 内部 let
+    let _rendered = false;
+    let _pendingStream = null;
+    let _hasVideoTrack = false;
+    // ====== Dummy AudioContext + track 顶层引用（防止泄漏） ======
+    //   每次 createPeerConnection 会创建一个新的 AudioContext 做静音 dummy sendonly，
+    //   stopPlay 时必须显式 close() + 停 track，否则多次 start→stop 会累积 AudioContext，
+    //   Chrome 最多允许 6 个并发 AudioContext，超过会抛 DOMException。
+    let _dummyAc = null;
+    let _dummyTracks = [];
+    function _tryRenderOnce() {
+        if (_rendered) return;
+        if (!_hasVideoTrack || !_pendingStream) return;
+        if (!_pendingStream.getVideoTracks() || _pendingStream.getVideoTracks().length < 1) return;
+        _rendered = true;
+        const v = $('remoteVideo');
+        try {
+            // 先 pause：避免旧 srcObj 残留 pause→pause 残留（不影响新 srcObj 播放）
+            try { v.pause(); } catch(_) {}
+            v.srcObject = _pendingStream;
+            try { v.playoutDelayHint = 0.03; } catch(e) {}
+            log(`[SingleRender] 更新 video.srcObject stream id=${_pendingStream.id} video=${_pendingStream.getVideoTracks().length} audio=${_pendingStream.getAudioTracks().length}`, 'info');
+            log(`最终 stream tracks=${_pendingStream.getTracks().length} (video=${_pendingStream.getVideoTracks().length} audio=${_pendingStream.getAudioTracks().length})`, 'success');
+            setStatus('✅ 播放中', 'playing');
+            isPlaying = true;
+            // —— 真正渲染成功后，开始周期刷新 getStats 实际接收编码（最真实"实际解的啥编码"）——
+            _startCodecStatsPolling();
+            // 延迟 50ms：srcObject 完成绑定后再 play，避免 interrupted by new load
+            setTimeout(() => {
+                // ================ 3 次重试链：interrupted 错误立即再试（避免 Chrome srcObj 绑定延迟偶发打断） =================
+                let _retry = 0;
+                function _doPlay() {
+                    try {
+                        const p = v.play();
+                        if (p && typeof p.catch === 'function') {
+                            p.catch(err => {
+                                const msg = String(err && err.message ? err.message : err);
+                                if (/interrupted|interrupt/.test(msg) && _retry < 3) {
+                                    _retry++;
+                                    log(`[play retry #${_retry}] 被 interrupted，${60 + _retry * 40}ms 后重试`, 'warn');
+                                    setTimeout(_doPlay, 60 + _retry * 40);
+                                    return;
+                                }
+                                if (/interrupted|interrupt/.test(msg)) return; // 第4次仍 interrupted 就静默吞掉（画面已渲染）
+                                log(`video.play() 被拦截 (需用户点播放或受自动播放策略限制): ${msg}`, 'warn');
+                            });
+                        }
+                    } catch(_) {}
+                }
+                _doPlay();
+            }, 50);
+        } catch (e) {
+            log(`[SingleRender] 渲染 remote video 异常: ${e.message}`, 'error');
+        }
+    }
+
+    function $(id) { return document.getElementById(id); }
+    function log(msg, level='info') {
+        const div = document.createElement('div');
+        const time = new Date().toLocaleTimeString();
+        div.innerHTML = `<span class="time">${time}</span> <span class="${level}">${msg}</span>`;
+        $('logBox').appendChild(div);
+        $('logBox').scrollTop = $('logBox').scrollHeight;
+    }
+    function setStatus(text, state) {
+        const el = $('status');
+        el.textContent = text;
+        el.className = 'status ' + state;
+    }
+    function setButtons(playing) {
+        $('btnStart').disabled = playing;
+        $('btnStop').disabled = !playing;
+    }
+
+    // ================================================================
+    // 协商编码显示面板（Play 端：SFU Offer 声明 vs getStats 实际接收）
+    // ================================================================
+    let _codecStatsTimer = null;
+    function _showCodecPanel() { try { $('codecPanel').style.display = 'grid'; } catch(_) {} }
+    function _hideCodecPanel() { try { $('codecPanel').style.display = 'none'; } catch(_) {} }
+    // 易读格式化：千分位数字 + 字节转 KB/MB/GB
+    function _fmtInt(n) {
+        n = Number(n) || 0;
+        try { return n.toLocaleString('en-US'); } catch(_) { return String(n); }
+    }
+    function _fmtBytes(b) {
+        b = Number(b) || 0;
+        if (b <= 0) return '0 B';
+        if (b < 1024) return _fmtInt(b) + ' B';
+        if (b < 1024 * 1024) return (b / 1024).toFixed(2) + ' KB (' + _fmtInt(b) + ' B)';
+        if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(2) + ' MB (' + _fmtInt(b) + ' B)';
+        return (b / (1024 * 1024 * 1024)).toFixed(2) + ' GB (' + _fmtInt(b) + ' B)';
+    }
+    function _resetCodecPanel() {
+        try {
+            $('cvSdp').textContent = '-'; $('cvSdp').className = 'value video';
+            $('cvReal').textContent = '-'; $('cvReal').className = 'value video';
+            $('cvPkts').textContent = '-'; $('cvPkts').className = 'value video';
+            $('cvBytes').textContent = '-'; $('cvBytes').className = 'value video';
+            $('cvFrames').textContent = '-'; $('cvFrames').className = 'value video';
+            $('caSdp').textContent = '-'; $('caSdp').className = 'value audio';
+            $('caReal').textContent = '-'; $('caReal').className = 'value audio';
+            $('caPkts').textContent = '-'; $('caPkts').className = 'value audio';
+            $('caBytes').textContent = '-'; $('caBytes').className = 'value audio';
+            $('caSamples').textContent = '-'; $('caSamples').className = 'value audio';
+        } catch(_) {}
+    }
+    function _isBadVideoCodec(name) {
+        if (!name) return true;
+        const n = String(name).toLowerCase().trim();
+        if (n === '') return true;
+        const ok = ['h264','avc','video/h264','video/avc'];
+        return ok.indexOf(n) === -1;
+    }
+    function _isBadAudioCodec(name) {
+        if (!name) return true;
+        const n = String(name).toLowerCase().trim();
+        if (n === '') return true;
+        const ok = ['opus','audio/opus'];
+        return ok.indexOf(n) === -1;
+    }
+    function _parseSdpFirstCodec(sdpText) {
+        const result = { video:{name:'', pt:0}, audio:{name:'', pt:0} };
+        if (!sdpText) return result;
+        const lines = String(sdpText).split(/\r\n|\n|\r/);
+        const sections = [];
+        let cur = null;
+        for (let i = 0; i < lines.length; i++) {
+            const l = lines[i];
+            if (/^m=video\s/.test(l)) {
+                cur = { kind:'video', pts:new Set(), rtpmap:new Map() };
+                sections.push(cur);
+                const p = l.split(/\s+/);
+                for (let j = 3; j < p.length; j++) if (/^\d+$/.test(p[j])) cur.pts.add(p[j]);
+            } else if (/^m=audio\s/.test(l)) {
+                cur = { kind:'audio', pts:new Set(), rtpmap:new Map() };
+                sections.push(cur);
+                const p = l.split(/\s+/);
+                for (let j = 3; j < p.length; j++) if (/^\d+$/.test(p[j])) cur.pts.add(p[j]);
+            } else if (cur && /^m=/.test(l)) {
+                cur = null;
+            } else if (cur) {
+                const mR = l.match(/^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)(?:\/|$)/);
+                if (mR && cur.pts.has(mR[1])) {
+                    cur.rtpmap.set(mR[1], mR[2].toLowerCase());
+                }
+            }
+        }
+        const badCodes = new Set(['red','rtx','ulpfec','flexfec','fec','x-ulpfec','x-red','rtx-red']);
+        for (const s of sections) {
+            if (s.kind !== 'video' && s.kind !== 'audio') continue;
+            const mpts = [];
+            s.pts.forEach(v => mpts.push(v));
+            for (const pt of mpts) {
+                const c = s.rtpmap.get(pt) || '';
+                if (c === '' || badCodes.has(c)) continue;
+                result[s.kind] = { name: c, pt: parseInt(pt, 10) || 0 };
+                break;
+            }
+        }
+        return result;
+    }
+    function _updateSdpCodecFromText(sdpText, which /* 'offer' | 'answer' */) {
+        if (!sdpText) return;
+        const info = _parseSdpFirstCodec(sdpText);
+        _showCodecPanel();
+        if (info.video.name) {
+            const bad = _isBadVideoCodec(info.video.name);
+            $('cvSdp').textContent = `${info.video.name.toUpperCase()}${info.video.pt?` (PT=${info.video.pt})`:''}  [${which}]`;
+            $('cvSdp').className = 'value ' + (bad ? 'bad' : 'video');
+            log(`[SDP ${which}] 声明视频编码=${info.video.name.toUpperCase()} PT=${info.video.pt}${bad?' ⚠️ 不是H264！':''}`, bad ? 'error' : 'success');
+        }
+        if (info.audio.name) {
+            const bad = _isBadAudioCodec(info.audio.name);
+            $('caSdp').textContent = `${info.audio.name.toUpperCase()}${info.audio.pt?` (PT=${info.audio.pt})`:''}  [${which}]`;
+            $('caSdp').className = 'value ' + (bad ? 'bad' : 'audio');
+            log(`[SDP ${which}] 声明音频编码=${info.audio.name.toUpperCase()} PT=${info.audio.pt}${bad?' ⚠️ 不是Opus！':''}`, bad ? 'error' : 'success');
+        }
+    }
+    // Play 端：看 inbound-rtp 的 bytesReceived/packetsReceived/framesReceived 等，关联 codec
+    async function _pollAndShowRealCodec() {
+        if (!pc) return;
+        try {
+            const report = await pc.getStats(null);
+            const codecMap = new Map();
+            report.forEach(stat => {
+                if (stat.type === 'codec') {
+                    const mime = String(stat.mimeType || '').toLowerCase();
+                    const pt = Number(stat.payloadType ?? 0);
+                    const parts = mime.split('/');
+                    const short = parts.length === 2 ? parts[1] : mime;
+                    codecMap.set(stat.id, { mimeType: mime, short, pt });
+                }
+            });
+            const found = { video:null, audio:null };
+            // —— 每个 kind 统计所有 inbound-rtp 的总 pkts/bytes/frames ——
+            //   原因：RTX/FEC 流也会单独建 inbound-rtp，必须累加才能得到真实总量
+            const agg = {
+                video: { packetsReceived:0, bytesReceived:0, framesReceived:0, framesDecoded:0, framesDropped:0,
+                         packetsLost:0, jitter:0, frameWidth:0, frameHeight:0, frameRate:0, decoderImplementation:'' },
+                audio: { packetsReceived:0, bytesReceived:0, samplesReceived:0, samplesDecoded:0, samplesPlayed:0,
+                         packetsLost:0, jitter:0, totalSamplesDuration:0, audioLevel:0, playoutJitterBufferDelay:0,
+                         concealedSamples:0, silentConcealedSamples:0 },
+            };
+            report.forEach(stat => {
+                if (stat.type !== 'inbound-rtp') return;
+                const kind = String(stat.kind || '').toLowerCase();
+                if (kind !== 'video' && kind !== 'audio') return;
+                const bytes = Number(stat.bytesReceived ?? 0);
+                // 累加总量（即使是 RTX/FEC 也合并累加，真实反映网络接收情况）
+                const s = agg[kind];
+                s.packetsReceived += Number(stat.packetsReceived ?? 0);
+                s.bytesReceived   += Number(stat.bytesReceived   ?? 0);
+                s.packetsLost     += Number(stat.packetsLost     ?? 0);
+                if (stat.jitter) s.jitter = Math.max(s.jitter, Number(stat.jitter));
+                if (kind === 'video') {
+                    s.framesReceived += Number(stat.framesReceived ?? 0);
+                    s.framesDecoded  += Number(stat.framesDecoded  ?? 0);
+                    s.framesDropped  += Number(stat.framesDropped  ?? 0);
+                    if (stat.frameWidth > 0) s.frameWidth = Number(stat.frameWidth);
+                    if (stat.frameHeight > 0) s.frameHeight = Number(stat.frameHeight);
+                    if (stat.framesPerSecond > 0) s.frameRate = Math.max(s.frameRate, Number(stat.framesPerSecond));
+                    if (stat.decoderImplementation) s.decoderImplementation = String(stat.decoderImplementation);
+                } else {
+                    s.samplesReceived  += Number(stat.samplesReceived  ?? 0);
+                    s.samplesDecoded   += Number(stat.samplesDecoded   ?? 0);
+                    s.samplesPlayed    += Number(stat.samplesPlayed    ?? 0);
+                    s.totalSamplesDuration += Number(stat.totalSamplesDuration ?? 0);
+                    if (stat.audioLevel !== undefined && stat.audioLevel !== null) {
+                        s.audioLevel = Math.max(s.audioLevel, Number(stat.audioLevel));
+                    }
+                    if (stat.playoutJitterBufferDelay !== undefined) {
+                        s.playoutJitterBufferDelay = Math.max(s.playoutJitterBufferDelay, Number(stat.playoutJitterBufferDelay));
+                    }
+                    s.concealedSamples += Number(stat.concealedSamples ?? 0);
+                    s.silentConcealedSamples += Number(stat.silentConcealedSamples ?? 0);
+                }
+                // 选"主"流来显示编码信息（选 bytes 最大、在 codec 表中的那个）
+                if (bytes <= 0 && found[kind]) return;
+                const cid = stat.codecId || '';
+                const c = codecMap.get(cid);
+                if (!c) return;
+                if (!found[kind] || bytes > (found[kind].bytes || 0)) {
+                    found[kind] = { name: c.short, pt: c.pt, bytes, mimeType: c.mimeType };
+                }
+            });
+            _showCodecPanel();
+            // —— 视频：更新 5 行 ——
+            {
+                const v = agg.video;
+                if (found.video) {
+                    const bad = _isBadVideoCodec(found.video.name);
+                    $('cvReal').textContent = `${found.video.name.toUpperCase()} (PT=${found.video.pt})`;
+                    $('cvReal').className = 'value ' + (bad ? 'bad' : 'video');
+                }
+                $('cvPkts').textContent =
+                    _fmtInt(v.packetsReceived) + ' 个'
+                    + (v.packetsLost > 0 ? ` (丢 ${_fmtInt(v.packetsLost)})` : '');
+                $('cvPkts').className = 'value ' + (v.packetsReceived <= 0 ? 'bad' : (v.packetsLost > 0 ? 'warn' : 'video'));
+                $('cvBytes').textContent = _fmtBytes(v.bytesReceived);
+                $('cvBytes').className = 'value ' + (v.bytesReceived <= 0 ? 'bad' : 'video');
+                const frExtra = [];
+                if (v.frameWidth > 0 && v.frameHeight > 0) frExtra.push(`${v.frameWidth}x${v.frameHeight}`);
+                if (v.frameRate > 0) frExtra.push(v.frameRate.toFixed(1) + ' fps');
+                if (v.framesDropped > 0) frExtra.push(`丢帧 ${_fmtInt(v.framesDropped)}`);
+                if (v.decoderImplementation) frExtra.push(String(v.decoderImplementation).replace(/\s*codec\s*/g, ' ').trim().substring(0, 20));
+                $('cvFrames').textContent =
+                    `解码 ${_fmtInt(v.framesDecoded)} 帧 / 收 ${_fmtInt(v.framesReceived)}`
+                    + (frExtra.length ? '  [' + frExtra.join(' | ') + ']' : '');
+                $('cvFrames').className = 'value ' + (v.framesDecoded <= 0 ? 'bad' : 'video');
+            }
+            // —— 音频：更新 5 行 ——
+            {
+                const a = agg.audio;
+                if (found.audio) {
+                    const bad = _isBadAudioCodec(found.audio.name);
+                    $('caReal').textContent = `${found.audio.name.toUpperCase()} (PT=${found.audio.pt})`;
+                    $('caReal').className = 'value ' + (bad ? 'bad' : 'audio');
+                }
+                $('caPkts').textContent =
+                    _fmtInt(a.packetsReceived) + ' 个'
+                    + (a.packetsLost > 0 ? ` (丢 ${_fmtInt(a.packetsLost)})` : '');
+                $('caPkts').className = 'value ' + (a.packetsReceived <= 0 ? 'bad' : (a.packetsLost > 0 ? 'warn' : 'audio'));
+                $('caBytes').textContent = _fmtBytes(a.bytesReceived);
+                $('caBytes').className = 'value ' + (a.bytesReceived <= 0 ? 'bad' : 'audio');
+                const sExtra = [];
+                if (a.totalSamplesDuration > 0) sExtra.push('播放 ' + a.totalSamplesDuration.toFixed(1) + ' s');
+                if (a.audioLevel > 0) sExtra.push('电平 ' + a.audioLevel.toFixed(2));
+                if (a.concealedSamples > 0) sExtra.push('隐藏 ' + _fmtInt(a.concealedSamples));
+                $('caSamples').textContent =
+                    `播放采样 ${_fmtInt(a.samplesPlayed)}`
+                    + (sExtra.length ? '  [' + sExtra.join(' | ') + ']' : '');
+                $('caSamples').className = 'value ' + (a.samplesPlayed <= 0 && a.packetsReceived > 0 ? 'warn' : 'audio');
+            }
+        } catch(e) {}
+    }
+    function _startCodecStatsPolling() {
+        _stopCodecStatsPolling();
+        _pollAndShowRealCodec().catch(() => {});
+        _codecStatsTimer = setInterval(() => { _pollAndShowRealCodec().catch(() => {}); }, 3000);
+    }
+    function _stopCodecStatsPolling() {
+        if (_codecStatsTimer) { clearInterval(_codecStatsTimer); _codecStatsTimer = null; }
+    }
+
+    async function startPlay() {
+        // ====== 【100% 保障开播】 开始前强制清干净所有旧状态 ======
+        //    避免：stop→start 快速重连导致旧 pc/ws/video.srcObject 残留，浏览器
+        //    MediaStream 若仍绑定旧 track， ontrack 即便 fired 也不刷新画面
+        stopPlay();
+        isPlaying = false; joined = false;
+        // ====== 重置顶层单次渲染锁（stopPlay 已重置，这里再次确保干净） ======
+        _rendered = false;
+        _pendingStream = null;
+        _hasVideoTrack = false;
+        if (isPlaying) return;
+
+        setButtons(true);
+        setStatus('⏳ 连接信令...', 'connecting');
+        log('开始拉流流程', 'info');
+
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => {
+            log('信令服务器已连接', 'success');
+            ws.send(JSON.stringify({ type: 'join', role: 'play', streamId: ROOM_ID }));
+            log('发送 join(play) 消息', 'info');
+        };
+
+        ws.onmessage = async (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                log(`收到信令: ${msg.type}`, 'info');
+                switch (msg.type) {
+                    case 'joined':
+                        joined = true;
+                        log('服务端确认加入房间', 'success');
+                        // 创建 PeerConnection (等待推流端 offer)
+                        await createPeerConnection();
+                        break;
+                    case 'offer':
+                        if (pc) {
+                            await pc.setRemoteDescription(new RTCSessionDescription(msg));
+                            log('远程 Offer 设置成功', 'success');
+                            // —— 显示 SFU Offer 里声明的第一编码（服务端声称要转发的 codec）——
+                            _updateSdpCodecFromText(msg.sdp, 'offer');
+                            await createAnswer();
+                        }
+                        break;
+                    case 'candidate':
+                        if (pc && msg.candidate) {
+                            // ✅ 完整透传 candidate/sdpMid/sdpMLineIndex/usernameFragment 4 字段
+                            const candObj = { candidate: msg.candidate };
+                            if (msg.sdpMid !== undefined && msg.sdpMid !== null) candObj.sdpMid = msg.sdpMid;
+                            else candObj.sdpMid = '0';
+                            if (Number.isInteger(msg.sdpMLineIndex)) candObj.sdpMLineIndex = msg.sdpMLineIndex;
+                            else candObj.sdpMLineIndex = 0;
+                            if (msg.usernameFragment) candObj.usernameFragment = msg.usernameFragment;
+                            await pc.addIceCandidate(new RTCIceCandidate(candObj));
+                            log('添加 ICE candidate', 'info');
+                        }
+                        break;
+                    case 'publisher-left':
+                        log('推流端已断开，等待下一次推流...', 'warn');
+                        setStatus('⚠️ 推流已结束（主播已下线）', 'failed');
+                        // 立即彻底停止播放（关WS + 关PC + 清video + 清dummy + 复位状态），防止二次拉流残留旧状态
+                        try { await stopPlay(); } catch(_e) { log('publisher-left stopPlay 异常: ' + _e.message, 'warn'); }
+                        isPlaying = false;
+                        setButtons(false);
+                        break;
+                    case 'error':
+                        // 服务端的"架构拒绝"错误：code=stream-not-ready 表示主播未开播，立即停止不要再空等
+                        log(`服务端错误 code=${msg.code ?? '?'} msg=${msg.message ?? ''}`, 'error');
+                        if ((msg.code ?? '') === 'stream-not-ready') {
+                            setStatus('🚫 主播未开播或节目已下线，请等待主播开播后再拉流', 'failed');
+                            try { await stopPlay(); } catch(_e) { log('stream-not-ready stopPlay 异常: ' + _e.message, 'warn'); }
+                            isPlaying = false;
+                            setButtons(false);
+                        } else {
+                            setStatus('❌ 错误: ' + (msg.message ?? msg.code ?? '未知'), 'failed');
+                        }
+                        break;
+                    default:
+                        log('未知信令类型: ' + msg.type, 'warn');
+                }
+            } catch (e) {
+                log(`信令处理错误: ${e.message}`, 'error');
+            }
+        };
+
+        ws.onerror = () => { log('信令连接错误', 'error'); setStatus('❌ 信令错误', 'failed'); stopPlay(); };
+        ws.onclose = () => {
+            log('信令连接关闭', 'warn');
+            if (isPlaying) { setStatus('⚠️ 连接断开', 'failed'); stopPlay(); }
+        };
+    }
+
+    async function createPeerConnection() {
+        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:3478' }] });
+
+        // ================================================================
+        // ✅ 关键修复：强制 Play 端发 DTLS ClientHello
+        // 问题：若 Play 端所有 transceiver 都是 recvonly（纯接收媒体），Chrome 会
+        //       启动"懒 DTLS"模式：即使 answer SDP 写了 setup=active，浏览器也
+        //       认为自己没东西要发送 → 不主动发 ClientHello → 服务器等 ClientHello，
+        //       浏览器等服务器消息 → 双方永久卡死在 ICE connected 但 0 个 DTLS 包
+        // 解决：在 createAnswer 之前先通过 addTransceiver 创建一个 sendonly 的
+        //       静音音频 dummy track。这样浏览器认为"我有一个轨道要 send"，必然
+        //       先完成 DTLS 握手 → DTLS 100% 必启动。
+        // ================================================================
+        try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+                // ---- 【防泄漏】先关上次残留的旧 AudioContext / 旧 dummy track ----
+                //   多次 start→stop→start 如果不清理，Chrome 会累积 AudioContext，超过 6 个抛异常
+                try {
+                    if (_dummyTracks && _dummyTracks.length > 0) {
+                        _dummyTracks.forEach(t => { try { t.stop(); } catch(_) {} });
+                        _dummyTracks = [];
+                    }
+                } catch(_) {}
+                try {
+                    if (_dummyAc) { try { _dummyAc.close(); } catch(_) {} _dummyAc = null; }
+                } catch(_) {}
+
+                const ac = new AudioCtx();
+                _dummyAc = ac;
+                const osc = ac.createOscillator();
+                const gain = ac.createGain();
+                gain.gain.value = 0;                 // 完全静音（0 振幅），用户听不到任何声
+                osc.type = 'sine';
+                osc.frequency.value = 220;
+                osc.connect(gain);
+                gain.connect(ac.destination);
+                try { osc.start(); } catch(_) {}
+                const dummyStream = ac.createMediaStreamDestination();
+                gain.connect(dummyStream);
+                const dummyTrack = dummyStream.stream.getAudioTracks()[0];
+                if (dummyTrack) {
+                    _dummyTracks.push(dummyTrack);
+                    pc.addTransceiver(dummyTrack, { direction: 'sendonly' });
+                    log('已创建静音 dummy sendonly 音频轨道 (强制 DTLS 启动)', 'info');
+                }
+            }
+        } catch (e) {
+            log(`创建静音 dummy track 失败 (不致命，依赖 setup=passive 保活): ${e.message}`, 'warn');
+        }
+
+        pc.ontrack = (event) => {
+            try {
+                const t = event.track;
+                const receiver = event.receiver;
+                log(`ontrack fired: kind=${t.kind} id=${t.id} streams=${event.streams.length} muted=${t.muted} readyState=${t.readyState}`, 'info');
+
+                // ====== 低延迟优化：对每个receiver立即设置最小jitter buffer ======
+                if (receiver) {
+                    try {
+                        // Chrome 76+ 支持 jitterBufferTarget (单位ms)，越小延迟越低
+                        if (receiver.jitterBufferTarget !== undefined) {
+                            receiver.jitterBufferTarget = 50; // 50ms 极小jitter buffer
+                        }
+                        if (receiver.playoutDelayHint !== undefined) {
+                            receiver.playoutDelayHint = 0.03; // 30ms 播放延迟提示
+                        }
+                    } catch(e) {
+                        log(`设置receiver低延迟参数失败: ${e.message}`, 'warn');
+                    }
+                }
+
+                // ===== 收集 stream =====
+                let stream = null;
+                if (event.streams && event.streams.length > 0) {
+                    stream = event.streams[0];
+                    log(`使用 ontrack event.streams[0], id=${stream.id}, tracks=${stream.getTracks().length}`, 'info');
+                }
+                if (!stream) {
+                    if (_pendingStream) {
+                        stream = _pendingStream;
+                        try { if (!stream.getTrackById(t.id)) stream.addTrack(t); } catch(_) { try { stream.addTrack(t); } catch(__) {} }
+                    } else {
+                        stream = new MediaStream([t]);
+                        log(`event.streams 为空 → 新建 MediaStream([track])`, 'warn');
+                    }
+                }
+                // ===== 标记 video 已到达 =====
+                if (t.kind === 'video') _hasVideoTrack = true;
+                _pendingStream = stream;
+                // ====== 低延迟优化：video元素设置最小播放延迟 ======
+                try { $('remoteVideo').playoutDelayHint = 0.03; } catch(e) {}
+                log(`收集 tracks: hasVideo=${_hasVideoTrack} pending tracks=${stream.getTracks().length} (video=${stream.getVideoTracks().length} audio=${stream.getAudioTracks().length})`, 'info');
+                // ✅ 走单次渲染锁（核心修复：避免 audio/video 两次 ontrack 两次 set srcObject 打断 play()）
+                _tryRenderOnce();
+            } catch (e) {
+                log(`ontrack 异常: ${e.message}`, 'error');
+            }
+        };
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                const c = event.candidate.candidate;
+                if (c.includes('.local') || c.includes('0.0.0.0')) { log('跳过无效 candidate', 'warn'); return; }
+                // ✅ 完整透传 Trickle ICE 4 字段（同 push 端）
+                log(`发送 candidate: ${c.substring(0,80)}...`, 'info');
+                ws.send(JSON.stringify({
+                    type: 'candidate',
+                    candidate: c,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex,
+                    usernameFragment: event.candidate.usernameFragment,
+                }));
+            } else log('ICE 候选收集完成', 'success');
+        };
+
+        pc.oniceconnectionstatechange = () => {
+            const state = pc.iceConnectionState;
+            log(`ICE 状态: ${state}`, 'info');
+            if (state === 'failed' || state === 'disconnected') { setStatus('❌ ICE 断开', 'failed'); stopPlay(); }
+            // —— 双保险：即使没触发 ontrack（纯音频/黑屏场景），ice 连接后也开始轮询 codec（方便排查）——
+            if (state === 'connected' || state === 'completed') _startCodecStatsPolling();
+        };
+        pc.onconnectionstatechange = () => {
+            const state = pc.connectionState;
+            log(`连接状态: ${state}`, 'info');
+            if (state === 'failed') { setStatus('❌ 连接失败', 'failed'); stopPlay(); }
+            if (state === 'connected') _startCodecStatsPolling();
+        };
+    }
+
+    async function createAnswer() {
+        try {
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+            log('Answer 已发送', 'success');
+            // —— Play 端 answer 也记录一下（虽然通常和 Offer 一致，但可以方便排查不一致）——
+            _updateSdpCodecFromText(answer.sdp, 'answer');
+        } catch (e) {
+            log(`创建 Answer 失败: ${e.message}`, 'error');
+        }
+    }
+
+    function stopPlay() {
+        isPlaying = false; joined = false;
+        // ===== 先重置渲染锁状态（必须先重置，否则下次 start 时 ontrack 被 _rendered=true 挡住） =====
+        _rendered = false;
+        _pendingStream = null;
+        _hasVideoTrack = false;
+        setButtons(false); setStatus('⚪ 已停止', 'idle'); log('停止拉流', 'warn');
+        // —— 停止编码面板轮询 + 重置显示 ——
+        _stopCodecStatsPolling();
+        _resetCodecPanel();
+        _hideCodecPanel();
+        // ===== 1) 先关 PeerConnection / WebSocket（先断媒体来源，避免关 video 时仍有数据流入触发 Chrome load） =====
+        if (pc) { try { pc.close(); } catch(_) {} pc = null; }
+        if (ws && ws.readyState === WebSocket.OPEN) { try { ws.close(); } catch(_) {} ws = null; }
+        // ===== 2) 【防泄漏】关闭 Dummy AudioContext + 停所有 dummy tracks =====
+        //   不清理的话：Chrome 最多 6 个并发 AudioContext，第 7 次 startPlay 直接抛 DOMException
+        try {
+            if (_dummyTracks && _dummyTracks.length > 0) {
+                _dummyTracks.forEach(t => { try { t.stop(); } catch(_) {} });
+                _dummyTracks = [];
+            }
+        } catch(_) {}
+        try {
+            if (_dummyAc) { try { _dummyAc.close(); } catch(_) {} _dummyAc = null; }
+        } catch(_) {}
+        // ===== 3) 清理 video 元素：严格顺序 pause → removeAttribute src → srcObject = null（不调 .load()，避免触发 "new load request" 打断下次 play()） =====
+        try {
+            const v = $('remoteVideo');
+            try { v.pause(); } catch(_) {}
+            // 移除所有 track 再清 srcObj，确保 Chrome MediaStream 内部状态真正 detach
+            const old = v.srcObject;
+            if (old instanceof MediaStream) {
+                try { old.getTracks().forEach(tr => { try { tr.stop(); } catch(_) {} }); } catch(_) {}
+            }
+            try { v.removeAttribute('src'); } catch(_) {}
+            v.srcObject = null;
+        } catch(_) {}
+        $('btnStart').disabled = false;
+        log('[stopPlay ✅ 前端全清] pc/ws/dummyAc/视频元素 全部重置为干净状态，下次 startPlay = 全新客户端', 'success');
+    }
+
+    window.addEventListener('beforeunload', stopPlay);
+    document.getElementById('roomIdDisplay').textContent = ROOM_ID;
+</script>
+</body>
+</html>

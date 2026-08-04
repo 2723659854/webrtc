@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC Canvas 虚拟视频推流</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; color: #e0e0e0; padding: 20px; }
+        .container { max-width: 780px; margin: 0 auto; }
+        h1 { margin-bottom: 10px; }
+        .subtitle { color: #888; margin-bottom: 15px; font-size: 0.9em; }
+        .controls { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+        .settings { display: flex; gap: 16px; margin-bottom: 15px; flex-wrap: wrap; align-items: center; padding: 10px; background: #1a1a2e; border: 1px solid #2a2a3e; border-radius: 6px; }
+        .setting { display: flex; align-items: center; gap: 6px; }
+        .setting label { color: #888; font-size: 0.85em; }
+        .setting select { padding: 6px 10px; border-radius: 6px; border: 1px solid #444; background: #0f0f1a; color: #e0e0e0; font-size: 0.9em; cursor: pointer; }
+        .setting select:focus { outline: none; border-color: #4cc9f0; }
+        .btn { padding: 10px 20px; border: none; border-radius: 6px; font-size: 0.95em; cursor: pointer; font-weight: 500; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-start { background: #4cc9f0; color: #000; }
+        .btn-stop { background: #f72585; color: #fff; }
+        .status { padding: 10px; border-radius: 6px; text-align: center; font-weight: bold; margin-bottom: 15px; }
+        .status.idle { background: #1a1a2e; color: #666; }
+        .status.connecting { background: #2a1a0a; color: #ff9f1c; }
+        .status.streaming { background: #0a2a1a; color: #06d6a0; }
+        .status.failed { background: #2a0a0a; color: #f72585; }
+        .media-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+        .panel-box { background: #000; border: 1px solid #2a2a3e; border-radius: 8px; padding: 8px; display: flex; justify-content: center; align-items: center; flex-direction: column; }
+        .panel-box canvas, .panel-box video { width: 100%; max-height: 260px; border-radius: 4px; background: #111; display: block; }
+        .panel-title { color: #888; font-size: 0.8em; margin-bottom: 6px; }
+        .log-box { background: #000; border: 1px solid #2a2a3e; border-radius: 8px; padding: 12px; margin-top: 15px; max-height: 260px; overflow-y: auto; font-family: monospace; font-size: 0.8em; }
+        .log-box .time { color: #555; }
+        .log-box .info { color: #ccc; }
+        .log-box .warn { color: #ff9f1c; }
+        .log-box .success { color: #06d6a0; }
+        .log-box .error { color: #f72585; }
+        /* ===== 协商结果面板：非侵入式，10px 浅灰标题 + 彩色值 ===== */
+        .codec-panel {
+            background: #11111f;
+            border: 1px solid #2a2a3e;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-top: 12px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px 14px;
+            font-family: monospace;
+            font-size: 0.82em;
+        }
+        .codec-panel .title-hint {
+            grid-column: 1 / -1;
+            color: #777;
+            font-size: 10px;   /* 10px 极小灰色提示，非侵入 */
+            letter-spacing: 0.5px;
+        }
+        .codec-panel .label { color: #999; font-size: 11px; }
+        .codec-panel .value.video { color: #4cc9f0; font-weight: bold; }
+        .codec-panel .value.audio { color: #06d6a0; font-weight: bold; }
+        .codec-panel .value.bad   { color: #f72585; font-weight: bold; }
+        .codec-panel .pt { color: #888; margin-left: 6px; font-weight: normal; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🎨 Canvas 虚拟视频推流</h1>
+    <p class="subtitle">使用本地画布动态绘制 + 合成和弦音频推流，房间 ID: <span id="roomIdDisplay">stream_001</span></p>
+    <div class="controls">
+        <button class="btn btn-start" id="btnStart" onclick="startPush()">▶ 开始推流</button>
+        <button class="btn btn-stop" id="btnStop" onclick="stopPush()" disabled>■ 停止</button>
+    </div>
+    <div class="status idle" id="status">⚪ 空闲（点击「开始推流」直接启动，无需选择窗口）</div>
+
+    <!-- ====== 推流参数设置（参考 push_copy.html，实时可调） ====== -->
+    <div class="settings">
+        <div class="setting">
+            <label>分辨率</label>
+            <select id="resSelect" onchange="onResChange()">
+                <option value="480x270">480×270</option>
+                <option value="640x360" selected>640×360</option>
+                <option value="854x480">854×480</option>
+                <option value="1280x720">1280×720</option>
+            </select>
+        </div>
+        <div class="setting">
+            <label>帧率</label>
+            <select id="fpsSelect" onchange="onFpsChange()">
+                <option value="15">15</option>
+                <option value="20">20</option>
+                <option value="24">24</option>
+                <option value="30" selected>30</option>
+            </select>
+        </div>
+        <div class="setting">
+            <label>码率</label>
+            <select id="bitrateSelect" onchange="onBitrateChange()">
+                <option value="500">500k</option>
+                <option value="1000">1000k</option>
+                <option value="1500">1500k</option>
+                <option value="2000" selected>2000k</option>
+                <option value="2500">2500k</option>
+                <option value="4000">4000k</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="media-grid">
+        <div class="panel-box">
+            <div class="panel-title">Canvas 源（绘制内容）</div>
+            <canvas id="srcCanvas" width="640" height="360" style="aspect-ratio:16/9;"></canvas>
+        </div>
+        <div class="panel-box">
+            <div class="panel-title">本地预览（经过 MediaStream）</div>
+            <video id="localVideo" autoplay muted playsinline style="aspect-ratio:16/9;"></video>
+        </div>
+    </div>
+
+    <div class="log-box" id="logBox"></div>
+
+    <!-- ===== 协商结果显示面板（非侵入，10px 灰提示 + 彩色编码名） ===== -->
+    <div class="codec-panel" id="codecPanel" style="display:none;">
+        <div class="title-hint">📡 当前协商编码（SDP 声明 vs getStats 实际发送 codec，用于排查黑屏）</div>
+        <div>
+            <div class="label">📹 视频 · SDP 声明</div>
+            <div class="value video" id="cvSdp">-</div>
+        </div>
+        <div>
+            <div class="label">📹 视频 · 实际发送 (getStats)</div>
+            <div class="value video" id="cvReal">-</div>
+        </div>
+        <div>
+            <div class="label">🎵 音频 · SDP 声明</div>
+            <div class="value audio" id="caSdp">-</div>
+        </div>
+        <div>
+            <div class="label">🎵 音频 · 实际发送 (getStats)</div>
+            <div class="value audio" id="caReal">-</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ========== 配置 ==========
+    const ROOM_ID = 'stream_001';
+    const WS_URL = `ws://${location.hostname}:8088`;
+    // ⭐ 改为 let：可由 UI 控件（resSelect/fpsSelect/bitrateSelect）实时调整
+    let CANVAS_FPS = 30;
+    let CANVAS_W = 640;
+    let CANVAS_H = 360;
+    let CUR_BITRATE_KBPS = 2000;   // 当前码率（kbps），onBitrateChange 实时更新
+
+    // ====== UI 控件 onchange 处理 ======
+    // 分辨率：实时改 canvas.width/height，captureStream 自动跟随（无需重连）
+    function onResChange() {
+        const v = $('resSelect').value;
+        const [w, h] = v.split('x').map(Number);
+        if (!w || !h) return;
+        CANVAS_W = w; CANVAS_H = h;
+        const cv = $('srcCanvas');
+        cv.width = w; cv.height = h;
+        if (isStreaming) log(`分辨率热更新: ${w}x${h}（captureStream 自动跟随）`, 'info');
+    }
+    // 帧率：实时改 CANVAS_FPS + 重启 drawTimer；captureStream 的 fps 不能热改，需 stop+restart
+    function onFpsChange() {
+        const f = parseInt($('fpsSelect').value, 10);
+        if (!f || f < 1) return;
+        CANVAS_FPS = f;
+        // 重启 drawTimer（drawTimer 引用 CANVAS_FPS 计算 intervalMs）
+        if (drawTimer) {
+            clearInterval(drawTimer);
+            const intervalMs = Math.max(16, Math.floor(1000 / CANVAS_FPS));
+            drawTimer = setInterval(() => drawOneFrame(performance.now()), intervalMs);
+        }
+        if (isStreaming) {
+            log(`帧率热更新: ${f}fps（drawTimer 已重启；captureStream 的 fps 需停止后重新推流才生效）`, 'warn');
+        }
+    }
+    // 码率：sender.setParameters 热更新（无需重连，标准 WebRTC API）
+    async function onBitrateChange() {
+        const k = parseInt($('bitrateSelect').value, 10);
+        if (!k || k < 1) return;
+        CUR_BITRATE_KBPS = k;
+        if (pc && isStreaming) {
+            try {
+                for (const s of pc.getSenders()) {
+                    if (s.track && s.track.kind === 'video') {
+                        const params = s.getParameters();
+                        if (!params.encodings) params.encodings = [{}];
+                        params.encodings[0].maxBitrate = k * 1000;  // bps
+                        await s.setParameters(params);
+                        log(`码率热更新: ${k}kbps（已生效）`, 'success');
+                    }
+                }
+            } catch (e) {
+                log(`码率热更新失败: ${e.message}`, 'warn');
+            }
+        } else {
+            log(`码率预设: ${k}kbps（推流开始时应用）`, 'info');
+        }
+    }
+
+    // ========== 状态 ==========
+    let pc = null, ws = null, localStream = null;
+    let isStreaming = false, joined = false;
+    let drawTimer = null, watchdogTimer = null;
+    let drawFrameCount = 0;       // 画了多少帧
+    let lastDrawFrameCount = 0;   // 上次看门狗检查时的帧计数
+    let audioCtx = null, audioDest = null;    // Web Audio 相关
+
+    function $(id) { return document.getElementById(id); }
+    function log(msg, level='info') {
+        const div = document.createElement('div');
+        const time = new Date().toLocaleTimeString();
+        div.innerHTML = `<span class="time">${time}</span> <span class="${level}">${msg}</span>`;
+        $('logBox').appendChild(div);
+        $('logBox').scrollTop = $('logBox').scrollHeight;
+    }
+    function setStatus(text, state) {
+        const el = $('status');
+        el.textContent = text;
+        el.className = 'status ' + state;
+    }
+    function setButtons(starting) {
+        $('btnStart').disabled = starting;
+        $('btnStop').disabled = !starting;
+    }
+
+    // ================================================================
+    // 协商编码显示面板（用于排查：SDP 声明 H264 vs 实际发包是不是偷偷变成 VP8 了）
+    // ================================================================
+    let _codecStatsTimer = null;
+    function _showCodecPanel() { try { $('codecPanel').style.display = 'grid'; } catch(_) {} }
+    function _hideCodecPanel() { try { $('codecPanel').style.display = 'none'; } catch(_) {} }
+    function _resetCodecPanel() {
+        try {
+            $('cvSdp').textContent = '-'; $('cvSdp').className = 'value video';
+            $('cvReal').textContent = '-'; $('cvReal').className = 'value video';
+            $('caSdp').textContent = '-'; $('caSdp').className = 'value audio';
+            $('caReal').textContent = '-'; $('caReal').className = 'value audio';
+        } catch(_) {}
+    }
+    function _isBadVideoCodec(name) {
+        // 用户要求：只允许 H264/AVC；其他 VP8/VP9/AV1/H265/HEVC/Theora/MPV 一律视为异常协商（红色）
+        if (!name) return true;
+        const n = String(name).toLowerCase().trim();
+        if (n === '') return true;
+        const ok = ['h264','avc','video/h264','video/avc'];
+        if (ok.indexOf(n) !== -1) return false;
+        // 允许空 codec 但不标记 ok
+        return true;
+    }
+    function _isBadAudioCodec(name) {
+        if (!name) return true;
+        const n = String(name).toLowerCase().trim();
+        if (n === '') return true;
+        const ok = ['opus','audio/opus'];
+        return ok.indexOf(n) === -1;
+    }
+    /**
+     * 从 SDP 文本中解析 m=video/audio 的第一个真实 PT 对应的 codec（用于判断 Offer/Answer 声明了啥）
+     * 返回 { video: {name, pt}, audio: {name, pt} }，name 为空表示没找到
+     */
+    function _parseSdpFirstCodec(sdpText) {
+        const result = {
+            video: { name: '', pt: 0 },
+            audio: { name: '', pt: 0 }
+        };
+        if (!sdpText) return result;
+        const lines = String(sdpText).split(/\r\n|\n|\r/);
+        const sections = []; // [{kind:'video'|'audio'|'other', start:idx, pts:Set<string>, rtpmap:Map<pt,codecLower>}]
+        let cur = null;
+        for (let i = 0; i < lines.length; i++) {
+            const l = lines[i];
+            if (/^m=video\s/.test(l)) {
+                cur = { kind: 'video', pts: new Set(), rtpmap: new Map() };
+                sections.push(cur);
+                const p = l.split(/\s+/);
+                for (let j = 3; j < p.length; j++) if (/^\d+$/.test(p[j])) cur.pts.add(p[j]);
+            } else if (/^m=audio\s/.test(l)) {
+                cur = { kind: 'audio', pts: new Set(), rtpmap: new Map() };
+                sections.push(cur);
+                const p = l.split(/\s+/);
+                for (let j = 3; j < p.length; j++) if (/^\d+$/.test(p[j])) cur.pts.add(p[j]);
+            } else if (cur && /^m=/.test(l)) {
+                cur = null;
+            } else if (cur) {
+                const mR = l.match(/^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)(?:\/|$)/);
+                if (mR && cur.pts.has(mR[1])) {
+                    cur.rtpmap.set(mR[1], mR[2].toLowerCase());
+                }
+            }
+        }
+        // 对每个 section：按 m= 行 PT 顺序，找第一个 rtpmap 里不是 RED/RTX/ULPFEC/FlexFEC 的真实 codec
+        const badCodes = new Set(['red','rtx','ulpfec','flexfec','fec','x-ulpfec','x-red','rtx-red']);
+        for (const s of sections) {
+            if (s.kind !== 'video' && s.kind !== 'audio') continue;
+            const mpts = [];
+            s.pts.forEach(v => mpts.push(v));  // 保留插入顺序 = m= 行顺序
+            for (const pt of mpts) {
+                const c = s.rtpmap.get(pt) || '';
+                if (c === '' || badCodes.has(c)) continue;
+                result[s.kind] = { name: c, pt: parseInt(pt, 10) || 0 };
+                break;
+            }
+        }
+        return result;
+    }
+    function _updateSdpCodecFromText(sdpText, which /* 'offer' | 'answer' */) {
+        if (!sdpText) return;
+        const info = _parseSdpFirstCodec(sdpText);
+        _showCodecPanel();
+        // video
+        if (info.video.name) {
+            const bad = _isBadVideoCodec(info.video.name);
+            $('cvSdp').textContent = `${info.video.name.toUpperCase()}${info.video.pt?` (PT=${info.video.pt})`:''}  [${which}]`;
+            $('cvSdp').className = 'value ' + (bad ? 'bad' : 'video');
+            log(`[SDP ${which}] 声明视频编码=${info.video.name.toUpperCase()} PT=${info.video.pt}${bad?' ⚠️ 不是H264！':''}`, bad ? 'error' : 'success');
+        }
+        if (info.audio.name) {
+            const bad = _isBadAudioCodec(info.audio.name);
+            $('caSdp').textContent = `${info.audio.name.toUpperCase()}${info.audio.pt?` (PT=${info.audio.pt})`:''}  [${which}]`;
+            $('caSdp').className = 'value ' + (bad ? 'bad' : 'audio');
+            log(`[SDP ${which}] 声明音频编码=${info.audio.name.toUpperCase()} PT=${info.audio.pt}${bad?' ⚠️ 不是Opus！':''}`, bad ? 'error' : 'success');
+        }
+    }
+    /**
+     * 从 pc.getStats() 解析当前实际收发的 codec。
+     * push 端（发送）看 outbound-rtp，关联到 codec 报告的 mimeType + payloadType。
+     * 返回 { video:{name,pt,bytes}, audio:{name,pt,bytes} }
+     */
+    async function _pollAndShowRealCodec() {
+        if (!pc) return;
+        try {
+            const report = await pc.getStats(null);
+            // 1) 先建 codec id -> info map
+            const codecMap = new Map();
+            report.forEach(stat => {
+                if (stat.type === 'codec') {
+                    const mime = String(stat.mimeType || '').toLowerCase();
+                    const pt = Number(stat.payloadType ?? 0);
+                    const parts = mime.split('/');
+                    const short = parts.length === 2 ? parts[1] : mime;  // e.g. 'h264'
+                    codecMap.set(stat.id, { mimeType: mime, short, pt, transportId: stat.transportId });
+                }
+            });
+            const found = { video:null, audio:null };
+            // 2) 遍历 outbound-rtp（push端：sender）
+            report.forEach(stat => {
+                if (stat.type !== 'outbound-rtp') return;
+                const kind = String(stat.kind || '').toLowerCase();
+                if (kind !== 'video' && kind !== 'audio') return;
+                const bytes = Number(stat.bytesSent ?? 0);
+                // 跳过 0 字节的未使用 track（dummy track/冗余 track）
+                if (bytes <= 0 && found[kind]) return;
+                const cid = stat.codecId || '';
+                const c = codecMap.get(cid);
+                if (!c) return;
+                if (!found[kind] || bytes > (found[kind].bytes || 0)) {
+                    found[kind] = { name: c.short, pt: c.pt, bytes, mimeType: c.mimeType };
+                }
+            });
+            _showCodecPanel();
+            // 3) 更新 UI
+            if (found.video) {
+                const bad = _isBadVideoCodec(found.video.name);
+                $('cvReal').textContent = `${found.video.name.toUpperCase()} (PT=${found.video.pt})  ${found.video.bytes} B`;
+                $('cvReal').className = 'value ' + (bad ? 'bad' : 'video');
+            }
+            if (found.audio) {
+                const bad = _isBadAudioCodec(found.audio.name);
+                $('caReal').textContent = `${found.audio.name.toUpperCase()} (PT=${found.audio.pt})  ${found.audio.bytes} B`;
+                $('caReal').className = 'value ' + (bad ? 'bad' : 'audio');
+            }
+        } catch(e) {
+            // 静默忽略 getStats reject（非致命）
+        }
+    }
+    function _startCodecStatsPolling() {
+        _stopCodecStatsPolling();
+        // 立即打一次
+        _pollAndShowRealCodec().catch(() => {});
+        _codecStatsTimer = setInterval(() => {
+            _pollAndShowRealCodec().catch(() => {});
+        }, 3000);
+    }
+    function _stopCodecStatsPolling() {
+        if (_codecStatsTimer) { clearInterval(_codecStatsTimer); _codecStatsTimer = null; }
+    }
+
+    // ================================================================
+    // Canvas 动态绘制（运动内容足够丰富，保证 H.264 编码器有码率，不黑屏）
+    // 绘制策略：HSL 渐变背景 + 跳动矩形 + 飞行小圆 + 滚动文字 + 时间戳 + 帧计数
+    // ================================================================
+    function drawOneFrame(nowMs) {
+        const canvas = $('srcCanvas');
+        const ctx = canvas.getContext('2d');
+        const w = CANVAS_W, h = CANVAS_H;
+        const t = nowMs / 1000; // 秒
+
+        // 1) 渐变背景，色相每秒 +30 度
+        const hue1 = (t * 30) % 360;
+        const hue2 = (hue1 + 60) % 360;
+        const g = ctx.createLinearGradient(0, 0, w, h);
+        g.addColorStop(0, `hsl(${hue1}, 70%, 22%)`);
+        g.addColorStop(1, `hsl(${hue2}, 70%, 10%)`);
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, w, h);
+
+        // 2) 横向彩色条带（模拟"滚动背景"）
+        for (let i = 0; i < 6; i++) {
+            const y = ((t * 40 + i * 73) % (h + 60)) - 30;
+            ctx.fillStyle = `hsla(${(hue1 + i * 30) % 360}, 80%, 55%, 0.22)`;
+            ctx.fillRect(0, y, w, 18);
+        }
+
+        // 3) 跳动的 6 个矩形（位置和大小都动）
+        for (let i = 0; i < 6; i++) {
+            const phase = t * (1.3 + i * 0.2) + i * 1.1;
+            const x = 60 + i * 90 + Math.sin(phase) * 22;
+            const y = h * 0.33 + Math.cos(phase * 1.4) * 55;
+            const size = 26 + Math.sin(phase * 2) * 8;
+            ctx.fillStyle = `hsla(${(hue1 + i * 47) % 360}, 85%, 62%, 0.75)`;
+            ctx.fillRect(x - size/2, y - size/2, size, size);
+        }
+
+        // 4) 飞行的几个小圆点
+        for (let i = 0; i < 10; i++) {
+            const phase = t * (0.8 + i * 0.35) + i * 0.7;
+            const x = ((t * (40 + i * 8) + i * 57) % (w + 80)) - 40;
+            const y = h / 2 + Math.sin(phase) * (100 + i * 5);
+            ctx.beginPath();
+            ctx.arc(x, y, 4 + (i % 3), 0, Math.PI * 2);
+            ctx.fillStyle = `hsla(${(hue2 + i * 37) % 360}, 90%, 70%, 0.9)`;
+            ctx.fill();
+        }
+
+        // 5) 中心大字标题 + 时间戳 + 帧计数
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = 6;
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 32px -apple-system, Segoe UI, sans-serif';
+        ctx.fillText('WebRTC SFU 推流测试', w/2, h * 0.32);
+
+        ctx.font = '16px monospace';
+        const nowText = new Date().toLocaleString();
+        ctx.fillText('时间: ' + nowText, w/2, h * 0.48);
+        ctx.fillText('帧: ' + drawFrameCount + '  秒: ' + t.toFixed(1), w/2, h * 0.58);
+        ctx.fillText('房间: ' + ROOM_ID + '  分辨率: ' + w + 'x' + h + ' @ ' + CANVAS_FPS + 'fps', w/2, h * 0.68);
+
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillStyle = isStreaming ? '#06d6a0' : '#ff9f1c';
+        ctx.fillText('状态: ' + (isStreaming ? '推流中 ✅' : (joined ? '协商中...' : '空闲')), w/2, h * 0.82);
+
+        // 伪随机"噪点方块"，给编码器制造"画面变化"，避免码率过低被 Chrome 认为画面静止
+        ctx.shadowBlur = 0;
+        const noiseCnt = 8;
+        for (let i = 0; i < noiseCnt; i++) {
+            const seed = (drawFrameCount * 9301 + i * 49297) % 233280;
+            const r = seed / 233280;
+            const nx = Math.floor(r * w);
+            const ny = Math.floor(((seed * 7) % 233280) / 233280 * h);
+            const ns = 3 + ((seed * 3) % 5);
+            ctx.fillStyle = `hsla(${(seed % 360)}, 80%, 70%, 0.35)`;
+            ctx.fillRect(nx, ny, ns, ns);
+        }
+
+        drawFrameCount++;
+    }
+
+    // 启动 canvas 绘制定时器 + 看门狗（独立 setInterval 驱动，不依赖 requestAnimationFrame）
+    function startCanvasDraw() {
+        stopCanvasDraw();
+        drawFrameCount = 0;
+        lastDrawFrameCount = 0;
+        const intervalMs = Math.max(16, Math.floor(1000 / CANVAS_FPS)); // ~33ms for 30fps
+        drawOneFrame(performance.now());
+        drawTimer = setInterval(() => drawOneFrame(performance.now()), intervalMs);
+        log(`Canvas 绘制启动: ${CANVAS_W}x${CANVAS_H} @ ${CANVAS_FPS}fps (interval=${intervalMs}ms)`, 'info');
+
+        // 看门狗：每 3 秒检查是否真的在画画，没画就重启定时器（防止某些浏览器在后台卡死）
+        watchdogTimer = setInterval(() => {
+            if (drawFrameCount === lastDrawFrameCount) {
+                log('⚠️ Canvas 看门狗触发：绘制已停止，重启定时器', 'warn');
+                clearInterval(drawTimer);
+                drawTimer = setInterval(() => drawOneFrame(performance.now()), intervalMs);
+            }
+            lastDrawFrameCount = drawFrameCount;
+        }, 3000);
+    }
+
+    function stopCanvasDraw() {
+        if (drawTimer) { clearInterval(drawTimer); drawTimer = null; }
+        if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+    }
+
+    // ================================================================
+    // Web Audio：创建一个和弦音频（220Hz+330Hz 叠加，轻微颤音），
+    //            通过 createMediaStreamDestination 导出 MediaStreamTrack。
+    //            音量设置到人耳可听见的 0.15（过大爆音，过小 play 端怀疑无声）。
+    // ================================================================
+    function startAudioAndBuildStream() {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) {
+            log('⚠️ 浏览器不支持 AudioContext，仅推视频无音频', 'warn');
+            return buildVideoOnlyStream();
+        }
+        audioCtx = new AudioCtx();
+        // 两个正弦波叠加（A3 + E4，完美和弦）
+        const osc1 = audioCtx.createOscillator();
+        const osc2 = audioCtx.createOscillator();
+        osc1.type = 'sine';
+        osc2.type = 'sine';
+        osc1.frequency.value = 220;
+        osc2.frequency.value = 330;
+        // 加一个轻微的颤音效果，让声音不是绝对死板
+        const lfo = audioCtx.createOscillator();
+        const lfoGain = audioCtx.createGain();
+        lfo.frequency.value = 4;   // 4Hz 颤音
+        lfoGain.gain.value = 3;    // ±3Hz 频率摆动
+        lfo.connect(lfoGain);
+        lfoGain.connect(osc1.frequency);
+        lfoGain.connect(osc2.frequency);
+
+        const masterGain = audioCtx.createGain();
+        masterGain.gain.value = 0.15;  // 音量适中
+        osc1.connect(masterGain);
+        osc2.connect(masterGain);
+
+        audioDest = audioCtx.createMediaStreamDestination();
+        masterGain.connect(audioDest);
+        // 不连接 audioCtx.destination，推流端本地静音（仍正常推出音频给订阅端）
+
+        try { osc1.start(); osc2.start(); lfo.start(); } catch(_) {}
+        log('Web Audio 虚拟声源启动: 220Hz + 330Hz 和弦 + 4Hz 颤音', 'success');
+
+        // 组装 finalStream: canvas 视频 track + audio 音频 track
+        const canvasStream = $('srcCanvas').captureStream(CANVAS_FPS);
+        const vTrack = canvasStream.getVideoTracks()[0];
+        const aTrack = audioDest.stream.getAudioTracks()[0];
+        const finalStream = new MediaStream();
+        if (vTrack) finalStream.addTrack(vTrack);
+        if (aTrack) finalStream.addTrack(aTrack);
+        log(`虚拟 MediaStream 就绪: video=${vTrack ? 1 : 0} audio=${aTrack ? 1 : 0}`, 'success');
+        return finalStream;
+    }
+
+    function buildVideoOnlyStream() {
+        const canvasStream = $('srcCanvas').captureStream(CANVAS_FPS);
+        const vTrack = canvasStream.getVideoTracks()[0];
+        const finalStream = new MediaStream();
+        if (vTrack) finalStream.addTrack(vTrack);
+        return finalStream;
+    }
+
+    function stopAudioAndStream() {
+        if (localStream) {
+            localStream.getTracks().forEach(t => { try { t.stop(); } catch(_) {} });
+            localStream = null;
+        }
+        if (audioCtx) {
+            try { audioCtx.close(); } catch(_) {}
+            audioCtx = null;
+        }
+        audioDest = null;
+    }
+
+    // ========== 推流主流程 ==========
+    async function startPush() {
+        // ====== 开始推流前强制清干净所有旧状态 ======
+        //    避免：stop→start 快速重连导致旧 pc/ws/srtp keyint 状态残留
+        stopPush();
+        isStreaming = false; joined = false;
+        if (isStreaming) return;
+        setButtons(true);
+        setStatus('⏳ 初始化画布+音频...', 'connecting');
+
+        try {
+            // 1) 启动 Canvas 绘制
+            startCanvasDraw();
+
+            // 2) 构建 Canvas + Web Audio 的 MediaStream
+            localStream = startAudioAndBuildStream();
+            if (!localStream || localStream.getTracks().length === 0) {
+                throw new Error('构建 MediaStream 失败（0 tracks）');
+            }
+            $('localVideo').srcObject = localStream;
+            try { await $('localVideo').play(); } catch(e) { log('localVideo autoplay 被拦截（不影响推流）: ' + e.message, 'warn'); }
+
+            log('本地 MediaStream 组装完成，轨道数: ' + localStream.getTracks().length, 'success');
+
+            // 3) 连接信令服务器
+            ws = new WebSocket(WS_URL);
+            ws.onopen = () => {
+                log('信令服务器已连接', 'success');
+                ws.send(JSON.stringify({ type: 'join', role: 'push', streamId: ROOM_ID }));
+                log('发送 join(push) 消息', 'info');
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    log(`收到信令: ${msg.type}`, 'info');
+                    switch (msg.type) {
+                        case 'joined':
+                            joined = true;
+                            log('服务端确认加入房间', 'success');
+                            await createPeerConnection();
+                            await createOffer();
+                            break;
+                        case 'answer':
+                            if (pc) {
+                                await pc.setRemoteDescription(new RTCSessionDescription(msg));
+                                log('远程 Answer 设置成功', 'success');
+                                // —— 显示服务端 Answer 最终接受的编码（最终生效的 SDP 协议编码）——
+                                _updateSdpCodecFromText(msg.sdp, 'answer');
+                            }
+                            break;
+                        case 'candidate':
+                            if (pc && msg.candidate) {
+                                const candObj = { candidate: msg.candidate };
+                                if (msg.sdpMid !== undefined && msg.sdpMid !== null) candObj.sdpMid = msg.sdpMid;
+                                if (Number.isInteger(msg.sdpMLineIndex)) candObj.sdpMLineIndex = msg.sdpMLineIndex;
+                                if (msg.usernameFragment) candObj.usernameFragment = msg.usernameFragment;
+                                await pc.addIceCandidate(new RTCIceCandidate(candObj));
+                                log('添加 ICE candidate', 'info');
+                            }
+                            break;
+                        case 'subscriber-joined':
+                            log('有新的订阅者加入房间: ' + JSON.stringify(msg), 'info');
+                            break;
+                        default:
+                            log('未知信令类型: ' + msg.type, 'warn');
+                    }
+                } catch (e) {
+                    log(`信令处理错误: ${e.message}`, 'error');
+                }
+            };
+
+            ws.onerror = () => { log('信令连接错误', 'error'); setStatus('❌ 信令错误', 'failed'); stopPush(); };
+            ws.onclose = () => {
+                log('信令连接关闭', 'warn');
+                if (isStreaming) { setStatus('⚠️ 连接断开', 'failed'); stopPush(); }
+            };
+
+        } catch (e) {
+            log(`推流启动失败: ${e.message}`, 'error');
+            setStatus('❌ 启动失败', 'failed');
+            setButtons(false);
+            stopAudioAndStream();
+            stopCanvasDraw();
+        }
+    }
+
+    async function createPeerConnection() {
+        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:3478' }] });
+
+        // 使用 sendonly transceiver，明确每个 track 的 MSID 绑定到同一个 localStream
+        localStream.getTracks().forEach(track => {
+            try {
+                pc.addTransceiver(track, {
+                    direction: 'sendonly',
+                    streams: [localStream],
+                    sendEncodings: [{
+                        maxBitrate: 2500000,  // 2.5Mbps 足够清晰
+                        maxFramerate: 30,
+                        priority: 'high',
+                        networkPriority: 'high',
+                    }]
+                });
+            } catch(e) {
+                pc.addTrack(track, localStream);
+            }
+        });
+
+        // ====== 低延迟编码优化：设置视频编码参数 ======
+        const senders = pc.getSenders();
+        senders.forEach(sender => {
+            if (sender.track && sender.track.kind === 'video') {
+                const params = sender.getParameters();
+                if (!params.encodings) params.encodings = [{}];
+                // ⭐ 从 UI select 读取（默认 2000kbps / 30fps）
+                params.encodings[0].maxBitrate = CUR_BITRATE_KBPS * 1000;
+                params.encodings[0].maxFramerate = CANVAS_FPS;
+                params.encodings[0].priority = 'high';
+                params.encodings[0].networkPriority = 'high';
+                // degradationPreference = 'balanced'：折中策略
+                //   - maintain-framerate：保帧率降画质 → 画面越来越模糊（之前的问题）
+                //   - maintain-resolution：保画质降帧率 → 帧率过低卡顿（刚才的问题）
+                //   - balanced：折中，Chrome 在资源紧张时同时小幅降画质和帧率，画面流畅且不模糊
+                try {
+                    params.degradationPreference = 'balanced';
+                } catch(_) {}
+                sender.setParameters(params).catch(e => log(`设置编码参数失败: ${e.message}`, 'warn'));
+            }
+        });
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                const c = event.candidate.candidate;
+                if (c.includes('.local') || c.includes('0.0.0.0')) { log('跳过无效 candidate', 'warn'); return; }
+                // ✅ 完整透传 Trickle ICE 4 字段（和 play 端保持一致）
+                ws.send(JSON.stringify({
+                    type: 'candidate',
+                    candidate: c,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex,
+                    usernameFragment: event.candidate.usernameFragment,
+                }));
+                log(`发送 candidate: ${c.substring(0,80)}...`, 'info');
+            } else {
+                log('ICE 候选收集完成', 'success');
+            }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+            const state = pc.iceConnectionState;
+            log(`ICE 状态: ${state}`, 'info');
+            if (state === 'connected' || state === 'completed') {
+                setStatus('✅ 推流中', 'streaming');
+                isStreaming = true;
+                // —— 对齐 RTMP 秒开工业标准：推流端 1.5~2s 主动出一个 IDR 关键帧 ——
+                //    像 OBS/FFmpeg 的 -g 30（keyint=2s@30fps）
+                //    服务端只要缓存「最近一份完整 GOP」，新订阅者一进来就能 burst 缓存帧 <100ms 出画面
+                startKeyFrameLoop();
+                // —— 连接成功后，开始周期刷新 getStats 实际发送编码（最真实的"实际使用啥编码"）——
+                _startCodecStatsPolling();
+            } else if (state === 'failed' || state === 'disconnected') {
+                setStatus('❌ ICE 断开', 'failed');
+                stopPush();
+            }
+        };
+        pc.onconnectionstatechange = () => {
+            const state = pc.connectionState;
+            log(`连接状态: ${state}`, 'info');
+            if (state === 'connected') {
+                setStatus('✅ 推流中', 'streaming');
+                isStreaming = true;
+                startKeyFrameLoop();  // 双保险（部分浏览器只触发 connectionstate=connected 不再触发 ice）
+                _startCodecStatsPolling();  // 双保险：避免部分浏览器只触发 connectionstatechange
+            } else if (state === 'failed') {
+                setStatus('❌ 连接失败', 'failed');
+                stopPush();
+            }
+        };
+        pc.ontrack = (ev) => {
+            // push 端纯 sendonly，正常不会有远端 track，收到就记个日志
+            log(`[push端ontrack] 意外收到远端 track kind=${ev.track?.kind}，忽略`, 'warn');
+        };
+    }
+
+    // ====== 强制关键帧循环（对齐 RTMP 的 keyint=2 秒）======
+    //let _keyFrameTimer = null;
+    function startKeyFrameLoop2() {
+        if (_keyFrameTimer) return;  // 只启动一次
+        let count = 0;
+        _keyFrameTimer = setInterval(async () => {
+            if (!pc || !isStreaming) return;
+            const senders = pc.getSenders();
+            for (const s of senders) {
+                if (s.track && s.track.kind === 'video') {
+                    try {
+                        // 现代浏览器标准 API（Chrome 99+, Safari 15.4+, Firefox 113+）
+                        if (typeof s.requestKeyFrame === 'function') {
+                            await s.requestKeyFrame();
+                            count++;
+                            // 每 10 次 (约 20 秒) 打一次日志，不刷屏
+                            if (count % 10 === 1) log(`requestKeyFrame ok ×${count}（每 2s 强制 IDR 对齐 RTMP keyint=2）`, 'info');
+                        } else {
+                            // 旧浏览器兜底：setParameters 临时降级 maxFramerate 再恢复（副作用较大，不用）
+                            //  只打一次日志说明降级状态
+                            if (count === 0) log(`sender.requestKeyFrame 不支持，改用服务端 PLI 请求关键帧（会稍慢 ~300ms）`, 'warn');
+                            count = 1;
+                        }
+                    } catch (e) {
+                        // 静默忽略（浏览器对 requestKeyFrame 的 reject 是正常偶发行为）
+                    }
+                }
+            }
+        }, 2000);  // ============ 2 秒一个关键帧！像 RTMP 一样 ============
+    }
+
+    let _keyFrameTimer = null;
+    // 记录原始 degradationPreference，避免重复设置
+    let _originalPreference = null;
+
+    function startKeyFrameLoop() {
+        if (_keyFrameTimer) return;
+        // 先获取当前 preference（取视频发送器的第一个编码参数中的值）
+        if (!_originalPreference && pc) {
+            const senders = pc.getSenders();
+            for (const s of senders) {
+                if (s.track?.kind === 'video') {
+                    const params = s.getParameters();
+                    _originalPreference = params.degradationPreference || 'balanced';
+                    break;
+                }
+            }
+        }
+        let count = 0;
+        _keyFrameTimer = setInterval(async () => {
+            if (!pc || !isStreaming) return;
+            const senders = pc.getSenders();
+            for (const s of senders) {
+                if (s.track?.kind === 'video') {
+                    try {
+                        const params = s.getParameters();
+                        // 强制切换 preference → 编码器重配 → 输出 IDR
+                        params.degradationPreference =
+                            params.degradationPreference === 'maintain-resolution'
+                                ? 'balanced'
+                                : 'maintain-resolution';
+                        await s.setParameters(params);
+                        // 立即恢复原始 preference，保证后续画质策略不变
+                        params.degradationPreference = _originalPreference || 'balanced';
+                        await s.setParameters(params);
+                        count++;
+                        if (count % 10 === 1) {
+                            log(`📸 强制关键帧 ×${count} (degradationPreference 临时切换)`, 'info');
+                        }
+                    } catch (e) {
+                        // setParameters 过于频繁可能被 reject，忽略即可
+                    }
+                }
+            }
+        }, 2000); // 每 2 秒强制一次，对齐 RTMP keyint
+    }
+
+    function stopKeyFrameLoop() {
+        if (_keyFrameTimer) { clearInterval(_keyFrameTimer); _keyFrameTimer = null; }
+    }
+
+    async function createOffer() {
+        try {
+            let offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+            // ========== H264 优先：与 SFU SDP 强制单编码策略完全对齐，协商永远一致 ==========
+            //   排序规则（最高 → 最低）：
+            //     1. H264 packetization-mode=1 (WebRTC FU-A/STAP-A 标准，硬件编解码最广泛)
+            //     2. 其他 H264
+            //     3. VP8（兜底：如果浏览器无H264能降级，如iOS Safari特殊版本）
+            //     4. VP9 / AV1 次兜底
+            //   同时禁止 RED/RTX/ULPFEC/FlexFEC（与 SDP.php 强制单编码策略一致，避免 primaryPT 选到 RED）
+            offer = await prioritizeH264Codec(offer);
+            await pc.setLocalDescription(offer);
+            ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+            log('Offer 已发送 (len=' + offer.sdp.length + ', H264优先)', 'success');
+            // —— 显示 Offer 里声明的第一偏好编码（H264/OPUS 为绿，其他红）——
+            _updateSdpCodecFromText(offer.sdp, 'offer');
+            setStatus('⏳ 等待 Answer...', 'connecting');
+        } catch (e) {
+            log(`创建 Offer 失败: ${e.message}`, 'error');
+        }
+    }
+
+    /**
+     * 对 SDP 里 video m-section 的 rtpmap/fb 行按 codec 顺序重排：
+     *   H264(pm=1) > H264 其他 > VP8 > VP9 > AV1 > 其他兼容编码
+     *   同时移除 RED/RTX/ULPFEC/FlexFEC（与 SFU 强制单编码策略对齐）
+     * 返回新的 RTCSessionDescriptionInit（type=offer）
+     */
+    function prioritizeH264Codec(desc) {
+        const sdp = desc.sdp || '';
+        const lines = sdp.split(/\r\n|\n|\r/);
+        const outLines = [];
+        let inVideoSection = false;
+        let videoSectionStartIdx = -1;
+        let videoMlineOrig = null;
+        let videoPtList = []; // 原始 m=video 里的 PT 列表（按原始顺序）
+
+        // 1) 先扫一遍：定位 video m-section，提取 PT 列表
+        for (let i = 0; i < lines.length; i++) {
+            const l = lines[i];
+            if (l.startsWith('m=video ')) {
+                inVideoSection = true;
+                videoSectionStartIdx = i;
+                videoMlineOrig = l;
+                const parts = l.split(/\s+/);
+                // m=video 9 UDP/TLS/RTP/SAVPF 103 104 ... → 从索引3开始是 PTs
+                for (let j = 3; j < parts.length; j++) {
+                    const p = parts[j].trim();
+                    if (/^\d+$/.test(p)) videoPtList.push(p);
+                }
+                break;
+            }
+        }
+
+        if (!videoMlineOrig || videoPtList.length === 0) return desc;
+
+        // 2) 扫描 video m-section：取每个 PT 的 codec 名字 + fmtp（判断 pm）
+        let inVideoScanning = true;
+        const ptToCodec = new Map();   // PT(string) => 'h264'|'vp8'|...(lower)
+        const ptToFmtpRaw = new Map(); // PT(string) => 第一个 fmtp 原文（判 packetization-mode）
+        const rtpmapMap = new Map();   // PT(string) => a=rtpmap:... full line
+        const fmtpMap = new Map();     // PT(string) => a=fmtp:... full line array
+        const fbMap = new Map();       // PT(string) => a=rtcp-fb:... full line array
+        for (const k of videoPtList) { ptToFmtpRaw.set(k, ''); fmtpMap.set(k, []); fbMap.set(k, []); }
+        const otherVideoLines = [];    // a=sendonly / a=ssrc / a=extmap 等 video section 里非 PT 相关的行
+
+        for (let i = videoSectionStartIdx + 1; i < lines.length; i++) {
+            const l = lines[i];
+            if (!l) continue;
+            if (l.startsWith('m=')) break; // 下一个 m-section
+            // rfc4566: a=rtpmap:<pt> <codec>/<clock>[/<channels>]
+            const mRtpmap = l.match(/^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)(?:\/|$)/);
+            if (mRtpmap) {
+                const pt = mRtpmap[1];
+                if (videoPtList.indexOf(pt) === -1) { otherVideoLines.push(l); continue; }
+                const codec = mRtpmap[2].toLowerCase();
+                ptToCodec.set(pt, codec);
+                rtpmapMap.set(pt, l);
+                continue;
+            }
+            const mFmtp = l.match(/^a=fmtp:(\d+)(?:\s|$)/);
+            if (mFmtp) {
+                const pt = mFmtp[1];
+                if (videoPtList.indexOf(pt) !== -1) {
+                    fmtpMap.get(pt).push(l);
+                    if (ptToFmtpRaw.get(pt) === '') ptToFmtpRaw.set(pt, l);
+                    continue;
+                }
+            }
+            const mFb = l.match(/^a=rtcp-fb:(\d+)(?:\s|$)/);
+            if (mFb) {
+                const pt = mFb[1];
+                if (videoPtList.indexOf(pt) !== -1) { fbMap.get(pt).push(l); continue; }
+            }
+            otherVideoLines.push(l);
+        }
+
+        // 3) PT 过滤 + 排序：禁止 RED/RTX/ULPFEC/FlexFEC，保留 H264/VP8/VP9/AV1
+        //    排序优先级：H264(pm=1) > H264(其他) > VP8 > VP9 > AV1 > 其他兼容编码
+        function ptWeight(pt) {
+            const c = (ptToCodec.get(pt) || '').toLowerCase();
+            const fmtpRaw = ptToFmtpRaw.get(pt) || '';
+            if (c === 'h264' || c === 'avc') {
+                if (fmtpRaw.indexOf('packetization-mode=1') !== -1) return 0;  // 最高：H264 pm=1 (WebRTC FU-A/STAP-A)
+                return 1;  // 其他 H264 兜底
+            }
+            if (c === 'vp8') return 10;    // VP8 首选兜底（无H264时）
+            if (c === 'vp9') return 20;
+            if (c === 'av1') return 30;
+            if (!c) return 200;
+            return 50;  // 其他兼容编码
+        }
+        // 仅禁止冗余编码，保留所有真实视频编码（SFU 后端再过滤，前端保证 Offer 有 H264 即可）
+        const isForbiddenCodec = (c) => /^(red|ulpfec|flexfec|rtx)$/i.test(c || '');
+        const sortedPts = videoPtList
+            .filter(pt => !isForbiddenCodec(ptToCodec.get(pt) || ''))
+            .sort((a, b) => ptWeight(a) - ptWeight(b));
+        // 确保只有已知 rtpmap 的 PT 才放进来
+        const finalPts = sortedPts.filter(pt => rtpmapMap.has(pt));
+        if (finalPts.length === 0) return desc;
+
+        // 4) 重建 m=video 行：m=video <port> UDP/TLS/RTP/SAVPF <sortedPts space>
+        const mParts = videoMlineOrig.split(/\s+/);
+        mParts.splice(3, mParts.length - 3, ...finalPts);
+        const newMline = mParts.join(' ');
+
+        // 5) 组装新的 video section：mline + rtpmap + fmtp + fb + other lines
+        const newSection = [newMline];
+        for (const pt of finalPts) {
+            if (rtpmapMap.has(pt)) newSection.push(rtpmapMap.get(pt));
+            const fm = fmtpMap.get(pt); if (fm && fm.length) for (const x of fm) newSection.push(x);
+            const fb = fbMap.get(pt); if (fb && fb.length) for (const x of fb) newSection.push(x);
+        }
+        for (const l of otherVideoLines) newSection.push(l);
+
+        // 6) 拼整个 SDP：pre-video-lines + newSection + post-video-lines
+        for (let i = 0; i < videoSectionStartIdx; i++) outLines.push(lines[i]);
+        for (const l of newSection) outLines.push(l);
+        // 跳过旧 video section 内容，直到下一个 m= 或 EOF
+        let i = videoSectionStartIdx + 1;
+        for (; i < lines.length; i++) {
+            if (lines[i].startsWith('m=')) break;
+        }
+        for (; i < lines.length; i++) outLines.push(lines[i]);
+
+        return { type: desc.type, sdp: outLines.join('\r\n') + '\r\n' };
+    }
+
+    function stopPush() {
+        isStreaming = false;
+        joined = false;
+        setButtons(false);
+        setStatus('⚪ 已停止', 'idle');
+        log('停止推流', 'warn');
+        stopKeyFrameLoop();
+        // —— 停止编码面板轮询 + 重置显示 ——
+        _stopCodecStatsPolling();
+        _resetCodecPanel();
+        _hideCodecPanel();
+        // 按顺序关：先信令 → 再 PC → 再音视频 → 再 canvas
+        if (ws && ws.readyState === WebSocket.OPEN) { try { ws.close(); } catch(_) {} ws = null; }
+        if (pc) { try { pc.close(); } catch(_) {} pc = null; }
+        stopAudioAndStream();
+        $('localVideo').srcObject = null;
+        stopCanvasDraw();
+        $('btnStart').disabled = false;
+    }
+
+    window.addEventListener('beforeunload', stopPush);
+    document.getElementById('roomIdDisplay').textContent = ROOM_ID;
+
+    // 页面加载后，先画一帧，让用户能看到画面不是纯黑（即使没开始推流）
+    window.addEventListener('DOMContentLoaded', () => {
+        drawOneFrame(performance.now());
+    });
+</script>
+</body>
+</html>
