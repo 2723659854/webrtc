@@ -10,31 +10,6 @@ namespace Xiaosongshu\Webrtc\Core;
 trait UDP
 {
 
-    private function _udpDbgHttpPost(string $payload, string $sessionId = 'whep-zero-video'): ?bool
-    {
-        static $urls = [], $failures = [], $openUntil = [];
-        $now = microtime(true);
-        if (($openUntil[$sessionId] ?? 0.0) > $now) return null;
-        if (!isset($urls[$sessionId])) {
-            $env = @file_get_contents(dirname(__DIR__, 2) . '/.dbg/' . $sessionId . '.env');
-            preg_match('/^DEBUG_SERVER_URL=(.+)$/m', (string)$env, $match);
-            $urls[$sessionId] = trim($match[1] ?? 'http://127.0.0.1:7777/event');
-        }
-        //todo
-        $result = @file_get_contents($urls[$sessionId], false, stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/json\r\nConnection: close\r\n",'content'=>$payload,'timeout'=>0.005,'ignore_errors'=>true]]));
-        if ($result !== false) {
-            $failures[$sessionId] = 0;
-            $openUntil[$sessionId] = 0.0;
-            return true;
-        }
-        $failures[$sessionId] = (int)($failures[$sessionId] ?? 0) + 1;
-        if ($failures[$sessionId] >= 2) {
-            $failures[$sessionId] = 0;
-            $openUntil[$sessionId] = $now + 30.0;
-        }
-        return false;
-    }
-
     /**
      * 启动upp服务器
      * @return void
@@ -417,14 +392,6 @@ trait UDP
 
         }
 
-        if ($kind === 'video') {
-            static $_dbgVideoSendCount = [];
-            $_dbgVideoSendCount[$clientId] = (int)($_dbgVideoSendCount[$clientId] ?? 0);
-            if ($_dbgVideoSendCount[$clientId] < 1) {
-                $_dbgVideoSendCount[$clientId]++;
-            }
-        }
-
         if (!$sent) {
             if (empty($c['_warnedSendUdp'])) {
                 $c['_warnedSendUdp'] = true;
@@ -714,21 +681,17 @@ trait UDP
                     $_dbgRawPtL = strlen($data) >= 2 ? ord($data[1]) : -1;
                     $_dbgStatsL['total']++; $_dbgStatsL[$_dbgUnprotectOkL ? 'ok' : 'fail']++;
                     $_dbgStatsL['rawPt'][(string)$_dbgRawPtL] = (int)($_dbgStatsL['rawPt'][(string)$_dbgRawPtL] ?? 0) + 1;
-                    $_dbgCompoundL = [];
                     if ($_dbgUnprotectOkL) {
                         for ($_dbgOffsetL=0, $_dbgPlainLenL=strlen($plainRtcp); ($_dbgOffsetL+4)<=$_dbgPlainLenL;) {
                             $_dbgPacketLenL = (unpack('n', substr($plainRtcp, $_dbgOffsetL+2, 2))[1]+1)*4;
                             if ($_dbgPacketLenL < 4 || ($_dbgOffsetL+$_dbgPacketLenL)>$_dbgPlainLenL) break;
                             $_dbgPtL=ord($plainRtcp[$_dbgOffsetL+1]); $_dbgFmtL=ord($plainRtcp[$_dbgOffsetL])&0x1F; $_dbgKeyL=$_dbgPtL . '/' . $_dbgFmtL;
                             $_dbgStatsL['plainPtFmt'][$_dbgKeyL]=(int)($_dbgStatsL['plainPtFmt'][$_dbgKeyL]??0)+1;
-                            $_dbgCompoundL[]=['pt'=>$_dbgPtL,'fmt'=>$_dbgFmtL,'length'=>$_dbgPacketLenL]; $_dbgOffsetL += $_dbgPacketLenL;
+                            $_dbgOffsetL += $_dbgPacketLenL;
                         }
                     }
                     $_dbgPeriodicL = ($_dbgNowL - $_dbgStatsL['lastReport']) >= 1.0;
                     if ($_dbgPeriodicL) {
-                        $_dbgDataL=['clientId'=>$targetClientId,'role'=>(string)($_dbgMetaL['role']??''),'streamId'=>(string)($_dbgMetaL['streamId']??''),'aggregate'=>true,'total'=>$_dbgStatsL['total'],'unprotectOk'=>$_dbgStatsL['ok'],'unprotectFail'=>$_dbgStatsL['fail'],'rawPtDistribution'=>$_dbgStatsL['rawPt'],'decryptedPtFmtDistribution'=>$_dbgStatsL['plainPtFmt']];
-                        $_dbgPayloadL=json_encode(['sessionId'=>'whep-zero-video','runId'=>'post-srtcp-feedback-fix','hypothesisId'=>'L','location'=>'src/Core/UDP.php:srtcp-unprotect','msg'=>'[DEBUG] Publisher/subscriber SRTCP 1s aggregate','data'=>$_dbgDataL,'ts'=>(int)($_dbgNowL*1000)]);
-                        $this->_udpDbgHttpPost($_dbgPayloadL);
                         $_dbgSrtcpL[$targetClientId]=['total'=>0,'ok'=>0,'fail'=>0,'rawPt'=>[],'plainPtFmt'=>[],'immediate'=>0,'lastReport'=>$_dbgNowL];
                     }
                     unset($_dbgStatsL);
@@ -954,7 +917,7 @@ trait UDP
                 $_obs['lastSeq']=$seq; $_obs['lastTs']=$ts; $_obs['previousSeq']=$seq; $_obs['previousTs']=$ts;
                 if (($_obsNow-(float)$_obs['lastReportAt'])>=1.0) {
                     $_obsData=$_obs; unset($_obsData['frame'],$_obsData['previousSeq'],$_obsData['previousTs'],$_obsData['lastReportAt']); $_obsData += ['clientId'=>(int)$targetClientId,'streamId'=>(string)($_dbgMeta['streamId']??''),'ssrc'=>(int)$ssrcVal,'pt'=>(int)$pt,'fps'=>(int)$_obs['markerCount'],'intervalMs'=>(int)(($_obsNow-(float)$_obs['lastReportAt'])*1000)];
-                    $this->_udpDbgHttpPost(json_encode(['sessionId'=>'obs-media-pixelation','runId'=>'pre-rr-gap-analysis','hypothesisId'=>'publisher-gap-h264','location'=>'src/Core/UDP.php:publisher-video-inbound','msg'=>'[DEBUG] Publisher video/H264 1s aggregate','data'=>$_obsData,'ts'=>(int)($_obsNow*1000)]),'obs-media-pixelation');
+
                     $_obsFrame=$_obs['frame']; $_obsPrevSeq=$_obs['previousSeq']; $_obsPrevTs=$_obs['previousTs']; $_obsInbound[$_obsKey]=['lastReportAt'=>$_obsNow,'packetCount'=>0,'bytes'=>0,'markerCount'=>0,'distinctTimestamp'=>0,'gapEvents'=>0,'estimatedLost'=>0,'duplicate'=>0,'outOfOrder'=>0,'firstSeq'=>null,'lastSeq'=>null,'firstTs'=>null,'lastTs'=>null,'previousSeq'=>$_obsPrevSeq,'previousTs'=>$_obsPrevTs,'completedFrames'=>0,'framesWithoutMarker'=>0,'fuStartWithoutEnd'=>0,'fuEndWithoutStart'=>0,'fuSequenceGap'=>0,'idrFrames'=>0,'sps'=>0,'pps'=>0,'nalTypes'=>[],'frame'=>$_obsFrame];
                 }
                 unset($_obs);
