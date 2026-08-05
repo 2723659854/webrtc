@@ -1,6 +1,18 @@
 {
     "name": "xiaosongshu/webrtc",
     "description": "Dependency-free WebRTC protocol implemented in PHP, offering a native WebRTC service.",
+    "keywords": [
+      "webrtc",
+      "h264",
+      "opus",
+      "obs",
+      "sfu",
+      "whip",
+      "whep",
+      "srtp",
+      "push",
+      "pull"
+    ],
     "type": "library",
     "license": "Apache-2.0",
     "autoload": {
