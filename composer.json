@@ -19,6 +19,7 @@
       "php": ">=7.3.9",
       "ext-openssl": "*",
       "ext-json": "*",
-      "ext-sockets": "*"
+      "ext-sockets": "*",
+      "ext-ctype": "*"
     }
 }
