@@ -9,7 +9,6 @@ namespace Xiaosongshu\Webrtc\Core;
  */
 trait STUN
 {
-
     /**
      * 启动stun服务器
      * @return void
@@ -54,15 +53,27 @@ trait STUN
 
             $responseUsername = '';
             $useCandidate = false;
+            $requestMiOffset = null;
+            $requestMi = null;
+            $requestHasFingerprint = false;
+            $requestAttributeTypes = [];
             $attributesEnd = min(strlen($data), 20 + $msgLen);
             for ($offset = 20; ($offset + 4) <= $attributesEnd;) {
                 $attribute = unpack('ntype/nlength', substr($data, $offset, 4));
                 $attributeLength = (int)$attribute['length'];
                 if (($offset + 4 + $attributeLength) > $attributesEnd) break;
 
-                if ((int)$attribute['type'] === 0x0006) {
+                $attributeType = (int)$attribute['type'];
+                $requestAttributeTypes[] = sprintf('%04x', $attributeType);
+                if ($attributeType === 0x0008 && $attributeLength === 20) {
+                    $requestMiOffset = $offset;
+                    $requestMi = substr($data, $offset + 4, 20);
+                } elseif ($attributeType === 0x8028 && $attributeLength === 4) {
+                    $requestHasFingerprint = true;
+                }
+                if ($attributeType === 0x0006) {
                     $responseUsername = substr($data, $offset + 4, $attributeLength);
-                } elseif ((int)$attribute['type'] === 0x0025) {
+                } elseif ($attributeType === 0x0025) {
                     $useCandidate = true;
                 }
                 $offset += 4 + (($attributeLength + 3) & ~3);
@@ -87,18 +98,13 @@ trait STUN
                 }
             }
 
-            $usernamePadding = (4 - (strlen($responseUsername) % 4)) % 4;
-            $usernameAttr = pack('nn', 0x0006, strlen($responseUsername))
-                . $responseUsername
-                . str_repeat("\x00", $usernamePadding);
-
             $xorPort = $clientPort ^ 0x2112;
             $xorIP = ip2long($clientIP) ^ 0x2112A442;
             $xorAttr = "\x00\x20\x00\x08\x00\x01";
             $xorAttr .= pack('n', $xorPort);
             $xorAttr .= pack('N', $xorIP);
 
-            $attributesBeforeIntegrity = $usernameAttr . $xorAttr;
+            $attributesBeforeIntegrity = $xorAttr;
             $integrityLength = strlen($attributesBeforeIntegrity) + 24;
             $headerForMI = pack('n', 0x0101) . pack('n', $integrityLength) . $magicCookie . $transactionId;
             $hmac = hash_hmac('sha1', $headerForMI . $attributesBeforeIntegrity, $icePwd, true);
@@ -136,10 +142,26 @@ trait STUN
             $_stunTransactions[$transactionKey] = $now;
             $_stunSummary[$clientId]['lastRequestAt'] = $now;
             if (($this->clients[$clientId]['meta']['role'] ?? '') === 'push') {
+                $requestMiValid = null;
+                if ($requestMiOffset !== null && is_string($requestMi) && $icePwd !== '') {
+                    $requestHeaderForMi = substr($data, 0, 2)
+                        . pack('n', ($requestMiOffset - 20) + 24)
+                        . substr($data, 4, 16);
+                    $requestMiValid = hash_equals(
+                        $requestMi,
+                        hash_hmac('sha1', $requestHeaderForMi . substr($data, 20, $requestMiOffset - 20), $icePwd, true)
+                    );
+                }
+                $wallTime = date('Y-m-d H:i:s') . sprintf('.%03d', ((int)floor(($now - floor($now)) * 1000)));
                 $this->_log_std("[DEBUG ICE consent] client={$clientId} tx={$transactionHex}"
+                    . " at={$wallTime} from={$from}"
                     . " intervalMs=" . ($requestIntervalMs === null ? '-' : $requestIntervalMs)
                     . " retrans=" . ($previousTransactionAt > 0.0 ? 'yes' : 'no')
                     . " retransAfterMs=" . ($previousTransactionAt > 0.0 ? (int)(($now - $previousTransactionAt) * 1000) : '-')
+                    . " useCandidate=" . ($useCandidate ? 'yes' : 'no')
+                    . " attrs=" . implode(',', $requestAttributeTypes)
+                    . " requestMi=" . ($requestMiValid === null ? 'missing' : ($requestMiValid ? 'valid' : 'invalid'))
+                    . " requestFp=" . ($requestHasFingerprint ? 'present' : 'missing')
                     . " sent=" . ($sent === false ? '-1' : $sent) . "/" . strlen($response) . "\n");
             }
 
@@ -152,8 +174,6 @@ trait STUN
             }
         }
     }
-
-
 
 
     /**

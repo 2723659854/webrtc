@@ -390,7 +390,7 @@ trait DTLS
         $testEpoch = 1;
         $testSeq = 0;
         $testContentType = 0x16;
-        $testPlain = "\x14\x00\x00\x0c" . pack('n', 5) . "\x00\x00\x00\x00\x00\x0c" . random_bytes(12); // DTLS-style Finished (24B)
+        $testPlain = "\x14\x00\x00\x0c" . pack('n', 5) . "\x00\x00\x00\x00\x00\x0c" . random_bytes(12);
         $numValid = 0;
         $firstValidVariant = '';
         foreach ($encryptionByVariant as $variantName => $enc) {
@@ -536,7 +536,6 @@ trait DTLS
         $lengthCandidates[] = $tlsFragLen - $explicitLen - $tagLen;
 
         $loggedVariantErrors = 0;
-        $loggedVariants = [];
         foreach ($variants as $variantName => $enc) {
             if (!$enc) continue;
             $key = $enc['clientWriteKey'];
@@ -1146,7 +1145,7 @@ trait DTLS
     {
 
         $serverPreference = [
-            "\xc0\x2f",  // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (首选，兼容性+SHA256签名)
+            "\xc0\x2f",  // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
             "\xc0\x2b",  // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
             "\xc0\x30",  // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
             "\xc0\x13",  // TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA

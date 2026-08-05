@@ -8,35 +8,6 @@ use Exception;
  * @purpose SRTP协议
  * @author yanglong
  * 音视频媒体传输协议
- * @note php自带的openssl方法之AES-128-CTR存在严重bug，所以重构了这个方法
- * SRTP — Secure Real-time Transport Protocol
- *
- * 工业标准实现（严格对齐 RFC 3711 / libsrtp SRTP_AES128_CM_SHA1_80 = 0x0001）：
- *   Cipher  = AES-128 Counter Mode (RFC 3711 §3.1 / §4.1.1 / Appendix B.2)
- *   Auth    = HMAC-SHA1, truncated to 80 bits (10B) (RFC 3711 §4.2.1)
- *   KDF     = PRF = AES-128 CM (ICM) over master_key || master_salt (RFC 3711 §4.3.1 / Appendix B.3)
- *
- * —— HMAC 关键：libsrtp / BoringSSL / 真实 Chrome 的认证输入格式 =
- *                  SRTP_body  ||  ROC_BE_4B
- *    RFC 3711 §4.2 只要求 "包含 ROC 字段"（实际未显式再补 4 个零字节）；
- *    libsrtp srtp_auth_compute() 实现就是拼 packet + ROC(4B)，本实现与之完全对齐。
- *
- * 派生会话密钥（KDF label）（RFC 3711 §4.3.2，Table 6 / Table 7）：
- *   SRTP  label 0x00 → rtpEncKey  (16 bytes)
- *   SRTP  label 0x01 → rtpAuthKey (20 bytes)
- *   SRTP  label 0x02 → rtpSalt    (14 bytes)
- *   SRTCP label 0x03 → rtcpEncKey (16 bytes)
- *   SRTCP label 0x04 → rtcpAuthKey(20 bytes)
- *   SRTCP label 0x05 → rtcpSalt   (14 bytes)
- *
- * IV / AES-ICM counter 构造（RFC 3711 §3.1.1 128-bit BE）：
- *   session_salt[14] || 0x0000
- *          XOR
- *   0x0000 || SSRC_BE_4B || ROC_BE_4B || (SEQ_BE << 16)
- *
- * 每个 SSRC 独立维护 32-bit ROC + 16-bit last_seq（RFC 3711 §3.3.1 / Appendix A）。
- * 接收 replay protection 实现为 "严格单调 / 窗口内接收拒绝重号"（未引入 64-bit 滑动位图），
- * 足以抵御典型网络乱序和普通重放攻击；后续如需 NAK 场景可扩展 libsrtp rdbx.c。
  */
 class SRTP
 {

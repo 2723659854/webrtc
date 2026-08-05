@@ -69,7 +69,7 @@ trait ICE
         $this->clients[$clientId]['audioPTs']        = isset($answerInfo['audioPTs']) && is_array($answerInfo['audioPTs']) ? $answerInfo['audioPTs'] : [];
         $this->clients[$clientId]['serverVideoSsrc'] = (int)($answerInfo['serverVideoSsrc'] ?? 4147483647);
         $this->clients[$clientId]['serverAudioSsrc'] = (int)($answerInfo['serverAudioSsrc'] ?? 3741943039);
-        $this->clients[$clientId]['serverSsrc']      = $this->clients[$clientId]['serverVideoSsrc']; // 兼容名
+        $this->clients[$clientId]['serverSsrc']      = $this->clients[$clientId]['serverVideoSsrc'];
         $this->clients[$clientId]['localSsrcByKind'] = isset($answerInfo['localSsrcByKind']) && is_array($answerInfo['localSsrcByKind']) ? $answerInfo['localSsrcByKind'] : [
             'video' => $this->clients[$clientId]['serverVideoSsrc'],
             'audio' => $this->clients[$clientId]['serverAudioSsrc'],
@@ -307,47 +307,6 @@ trait ICE
      * 幂等：onSubscriber 每个 clientId 只触发一次；auto SFU offer 每个 clientId 也只发送一次
      *   （防止 play 端 ICE/DTLS/answer 等阶段再次误触发，导致 offer ↔ answer 无限回环）
      */
-    private function _fireSubscriberIfReady2(int $subscriberId, string $streamId): void
-    {
-        $this->_log_std("[_fireSubscriberIfReady ENTER] client={$subscriberId} streamId={$streamId}\n");
-
-        if (!empty($this->clients[$subscriberId]['_sfuOfferFired'])) {
-            $this->_log_std("[_fireSubscriberIfReady] client={$subscriberId} 已发送过 Offer，跳过\n");
-            return;
-        }
-
-        $publisherId = $this->getPublisherIdByStreamId($streamId);
-        if ($publisherId === null) {
-            $this->_log_std("[_fireSubscriberIfReady] streamId={$streamId} 无推流端\n");
-            return;
-        }
-
-        if (isset($this->onSubscriber) && is_callable($this->onSubscriber)) {
-            try {
-                $_cb = $this->onSubscriber;
-                $_cb($subscriberId, [
-                    'streamId' => $streamId,
-                    'pushClientId' => $publisherId,
-                ], $this);
-            } catch (\Throwable $e) {
-                $this->_log_std("[_fireSubscriberIfReady] onSubscriber exception: " . $e->getMessage() . "\n");
-            }
-        }
-
-        $offerSdp = $this->makeSfuOfferForSubscriber($subscriberId, $publisherId, 'passive');
-        if ($offerSdp !== null && $offerSdp !== '') {
-            $this->sendSignaling($subscriberId, [
-                'type' => 'offer',
-                'sdp' => $offerSdp,
-                'streamId' => $streamId,
-            ]);
-            $this->clients[$subscriberId]['_sfuOfferFired'] = true;
-            $this->_log_std("[_fireSubscriberIfReady] 已向 subscriber={$subscriberId} 发送 SFU Offer (len=" . strlen($offerSdp) . ")\n");
-        } else {
-            $this->_log_std("[_fireSubscriberIfReady] makeSfuOfferForSubscriber 返回空\n");
-        }
-    }
-
     private function _fireSubscriberIfReady(int $subscriberId, string $streamId): void
     {
         $this->_log_std("[_fireSubscriberIfReady ENTER] client={$subscriberId} streamId={$streamId}\n");

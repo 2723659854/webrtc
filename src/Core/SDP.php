@@ -257,7 +257,6 @@ trait SDP
                 if (preg_match('/^a=mid:(\S+)/m', $videoSection, $vmid)) {
                     $videoMid = $vmid[1];
                 }
-                // ---- RFC 3264 解析 Offer video direction ----
                 if (preg_match('/^a=sendrecv/m', $videoSection)) {
                     $videoOfferDir = 'sendrecv';
                 } elseif (preg_match('/^a=sendonly/m', $videoSection)) {
