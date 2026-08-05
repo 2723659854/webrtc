@@ -1703,24 +1703,6 @@ trait DTLS
     }
 
     /**
-     * 计算主密码
-     * @param $clientId
-     * @param $preMasterSecret
-     * @param $clientRandom
-     * @param $serverRandom
-     * @param $hashAlgo
-     * @return false|string
-     */
-    private function computeMasterSecret($clientId, $preMasterSecret, $clientRandom, $serverRandom, $hashAlgo = 'sha256')
-    {
-        $label = "extended master secret";
-        $snapshot = $this->clients[$clientId]['sessionHashSnapshot'] ?? ($this->clients[$clientId]['handshakeHash'] ?? '');
-        $sessionHash = hash($hashAlgo, $snapshot, true);
-        $this->_log_std("Client {$clientId} computeMasterSecret (extended): hashAlgo={$hashAlgo}, snapshotLen=" . strlen($snapshot) . " session_hash=" . bin2hex($sessionHash) . "\n");
-        return $this->tls12PRF($preMasterSecret, $label, $sessionHash, 48, $hashAlgo);
-    }
-
-    /**
      * DTLS的加密key,iv生成函数，遵循tls规范
      * @param $secret
      * @param $label
@@ -1754,13 +1736,6 @@ trait DTLS
             $this->clients[$clientId]['hsSeq'] = 0;
         }
         return $this->clients[$clientId]['hsSeq']++;
-    }
-
-    private function computeKeyBlock($masterSecret, $clientRandom, $serverRandom)
-    {
-        $label = "key expansion";
-        $seed = $serverRandom . $clientRandom;
-        return $this->tls12PRF($masterSecret, $label, $seed, 136);
     }
 
     /**
@@ -2114,110 +2089,6 @@ trait DTLS
         $record = $this->createDTLSRecord($clientId, 22, $dtlsMsg);
         $this->clients[$clientId]['pendingRecords'][] = $record;
         $this->_log_std("Client {$clientId} ServerHelloDone appended\n");
-    }
-
-
-    private function sendChangeCipherSpec($clientId, $returnBytes = false)
-    {
-
-        if (!isset($this->clients[$clientId]['dtlsEpoch'])) {
-            $this->clients[$clientId]['dtlsEpoch'] = 0;
-        }
-        $this->clients[$clientId]['dtlsEpoch'] = 0;
-
-        $ccs = "\x01";
-        $record = $this->createDTLSRecord($clientId, 20, $ccs);
-        if ($returnBytes) {
-            $this->sendUDP($clientId, $record);
-            $this->_log_std("Client {$clientId} ChangeCipherSpec sent (epoch=0)\n");
-            $this->clients[$clientId]['dtlsEpoch'] = 1;
-            $this->clients[$clientId]['dtlsSeq'] = 0;
-            return $record;
-        }
-        $this->sendUDP($clientId, $record);
-        $this->_log_std("Client {$clientId} ChangeCipherSpec sent (epoch=0)\n");
-        $this->clients[$clientId]['dtlsEpoch'] = 1;
-        $this->clients[$clientId]['dtlsSeq'] = 0;
-    }
-
-    private function sendFinished($clientId, $returnBytes = false)
-    {
-        $masterSecret = $this->clients[$clientId]['masterSecret'] ?? '';
-        $hhName = $this->clients[$clientId]['matchedHhashName'] ?? 'hhDTLS12';
-        if ($hhName === 'hhTLS4') {
-            $handshakeHash = $this->clients[$clientId]['handshakeHash'] ?? '';
-        } else {
-            $handshakeHash = $this->clients[$clientId]['handshakeHashDTLS12'] ?? ($this->clients[$clientId]['handshakeHash'] ?? '');
-        }
-
-        if (empty($masterSecret) || empty($handshakeHash)) {
-            $this->_log_std("Client {$clientId} Cannot send Finished: missing masterSecret or handshakeHash\n");
-            return $returnBytes ? '' : null;
-        }
-
-        $cs = bin2hex($this->clients[$clientId]['cipherSuite']);
-        $hashAlgo = ($cs === 'c02b') ? 'sha384' : 'sha256';
-        $hash = hash($hashAlgo, $handshakeHash, true);
-        $verifyData = $this->tls12PRF($masterSecret, "server finished", $hash, 12, $hashAlgo);
-        $this->clients[$clientId]['serverVerifyData'] = $verifyData;
-        $this->_log_std("Client {$clientId} sendFinished: using hhash={$hhName}, handshakeHash len=" . strlen($handshakeHash) . " sha256=" . bin2hex(hash('sha256', $handshakeHash, true)) . "\n");
-        $this->_log_std("Client {$clientId} sendFinished: masterSecret len=" . strlen($masterSecret) . " sha256=" . bin2hex(hash('sha256', $masterSecret, true)) . "\n");
-        $this->_log_std("Client {$clientId} sendFinished: hash(" . $hashAlgo . ") of hs=" . bin2hex($hash) . "\n");
-        $this->_log_std("Client {$clientId} sendFinished: server verify_data=" . bin2hex($verifyData) . "\n");
-
-        $finishedBody = $verifyData;
-
-        $bodyLen = strlen($finishedBody);
-        $hsSeq = $this->getNextHandshakeSeq($clientId);
-
-        $finishedMsg = "\x14";
-        $finishedMsg .= chr(($bodyLen >> 16) & 0xFF);
-        $finishedMsg .= chr(($bodyLen >> 8) & 0xFF);
-        $finishedMsg .= chr($bodyLen & 0xFF);
-        $finishedMsg .= pack('n', $hsSeq);
-        $finishedMsg .= "\x00\x00\x00";
-        $finishedMsg .= chr(($bodyLen >> 16) & 0xFF);
-        $finishedMsg .= chr(($bodyLen >> 8) & 0xFF);
-        $finishedMsg .= chr($bodyLen & 0xFF);
-        $finishedMsg .= $finishedBody;
-
-        $epoch = $this->clients[$clientId]['dtlsEpoch'] ?? 1;
-        $seq = $this->clients[$clientId]['dtlsSeq'] ?? 0;
-        $encrypted = $this->encryptDTLSRecord($clientId, $finishedMsg, $epoch, $seq, 0x16);
-
-        $enc = $this->clients[$clientId]['encryption'];
-        $sfKey = $enc['serverWriteKey'];
-        $sfIV = $enc['serverWriteIV'];
-        $sfNE = substr($encrypted, 0, 8);
-        $sfCip = substr($encrypted, 8, -16);
-        $sfTag = substr($encrypted, -16);
-        $sfNonce = $sfIV . $sfNE;
-        $sfAD = $sfNE . chr(0x16) . "\xFE\xFD" . pack('n', strlen($finishedMsg));
-        $sfDec = openssl_decrypt($sfCip, $enc['cipherAlgo'], $sfKey, OPENSSL_RAW_DATA, $sfNonce, $sfTag, $sfAD);
-        $sfOk = ($sfDec === $finishedMsg) ? 'PASS' : 'FAIL (got ' . @strlen($sfDec) . ' vs ' . strlen($finishedMsg) . ')';
-        $this->_log_std("Client {$clientId} ServerFinished SELF_DECRYPT: $sfOk\n");
-        $this->_log_std("  plain_finished=" . bin2hex($finishedMsg) . "\n");
-        $this->_log_std("  serverWriteKey=" . bin2hex($sfKey) . " serverWriteIV=" . bin2hex($sfIV) . "\n");
-
-        $record = $this->createDTLSRecord($clientId, 22, $encrypted);
-        $sfRecHeader = bin2hex(substr($record, 0, 13));
-        $this->_log_std("  ServerFinished DTLS header(13B)=$sfRecHeader nonce_explicit=" . bin2hex($sfNE) . "\n");
-
-        if ($returnBytes) {
-            $this->sendUDP($clientId, $record);
-            $this->_log_std("Client {$clientId} Finished sent (encrypted, len=" . strlen($record) . ")\n");
-
-            $this->clients[$clientId]['dtlsState'] = 'connected';
-            $this->clients[$clientId]['state'] = 'connected';
-            $this->_log_std("Client {$clientId} WebRTC连接建立成功！\n");
-            return $record;
-        }
-        $this->sendUDP($clientId, $record);
-        $this->_log_std("Client {$clientId} Finished sent (encrypted, len=" . strlen($record) . ")\n");
-
-        $this->clients[$clientId]['dtlsState'] = 'connected';
-        $this->clients[$clientId]['state'] = 'connected';
-        $this->_log_std("Client {$clientId} WebRTC连接建立成功！\n");
     }
 
     /**

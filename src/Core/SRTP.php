@@ -174,12 +174,6 @@ class SRTP
         return ($packetRoc << 16) | $seq16;
     }
 
-    /** @deprecated 仅保留对旧代码兼容，用 nextPacketIndexPerSsrc(ssrc, seq) 代替 */
-    public function nextPacketIndexForSend($seq16)
-    {
-        return $this->nextPacketIndexPerSsrc(0, $seq16);
-    }
-
     /**
      * RFC 3711 §3.1 / §3.1.1 构造 128-bit IV/counter
      *   (14B session_salt || 0x0000)  XOR  (0x0000 || SSRC_BE || ROC_BE || (SEQ_BE << 16))
