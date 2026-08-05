@@ -44,7 +44,7 @@ trait UDP
      * 发送udp数据
      * @param $clientId
      * @param $data
-     * @return void
+     * @return bool
      */
     private function sendUDP($clientId, $data)
     {
@@ -149,22 +149,10 @@ trait UDP
                     $newSsrc = (int)($c['serverAudioSsrc'] ?? 3741943039);
                     $newPT   = $FORCE_AUDIO_PT > 0 ? $FORCE_AUDIO_PT : -1;
                     $ptHit   = 'audio(kind, subscriber target PT)';
-                    if ($FORCE_AUDIO_PT > 0 && !isset($audioPTs[$FORCE_AUDIO_PT])) {
-                        $audioPTs[$FORCE_AUDIO_PT] = [
-                            'rtpmap' => 'opus/48000/2', 'codec' => 'opus', 'clock' => 48000,
-                            'fmtp' => 'minptime=10;useinbandfec=1',
-                        ];
-                    }
                 } else {
                     $newSsrc = (int)($c['serverVideoSsrc'] ?? 4147483647);
                     $newPT   = $FORCE_VIDEO_PT > 0 ? $FORCE_VIDEO_PT : -1;
                     $ptHit   = 'video(kind, subscriber target PT)';
-                    if ($FORCE_VIDEO_PT > 0 && !isset($videoPTs[$FORCE_VIDEO_PT])) {
-                        $videoPTs[$FORCE_VIDEO_PT] = [
-                            'rtpmap' => 'H264/90000', 'codec' => 'H264', 'clock' => 90000,
-                            'fmtp' => 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
-                        ];
-                    }
                 }
             }
 
@@ -317,8 +305,6 @@ trait UDP
                     preg_match('/^a=(sendonly|recvonly|sendrecv|inactive)\\s*$/m', $_dbgSection, $_dbgDirectionMatch);
                     $_dbgDirection = $_dbgDirectionMatch[1] ?? 'sendrecv';
                     if ($_dbgDirection !== 'recvonly' && $_dbgDirection !== 'sendrecv') continue;
-                    preg_match('/^a=mid:([^\\r\\n]+)$/m', $_dbgSection, $_dbgMidMatch);
-
                     if (preg_match_all('/^a=extmap:(\\d+)(?:\\/([^\\s]+))?\\s+([^\\s\\r\\n]+)/m', $_dbgSection, $_dbgExtmapMatches, PREG_SET_ORDER)) {
                         foreach ($_dbgExtmapMatches as $_dbgExtmapMatch) {
                             $_dbgExtmap = ['id'=>(int)$_dbgExtmapMatch[1],'uri'=>(string)$_dbgExtmapMatch[3]];
