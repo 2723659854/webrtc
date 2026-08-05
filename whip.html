@@ -439,25 +439,6 @@
     }
 
     // ========== 关键帧循环 ==========
-    function startKeyFrameLoop2() {
-        if (keyFrameTimer) return;
-        let count = 0;
-        keyFrameTimer = setInterval(async () => {
-            if (!pc || !isStreaming) return;
-            try {
-                const senders = pc.getSenders();
-                for (const s of senders) {
-                    if (s.track && s.track.kind === 'video' && s.requestKeyFrame) {
-                        await s.requestKeyFrame();
-                        count++;
-                        if (count % 10 === 1) log(`📸 关键帧 ×${count}`, 'debug');
-                    }
-                }
-            } catch (e) {}
-        }, 2000);
-    }
-
-
     function startKeyFrameLoop() {
         if (keyFrameTimer) return;
         keyFrameTimer = setInterval(async () => {
@@ -466,9 +447,13 @@
                 const senders = pc.getSenders();
                 for (const s of senders) {
                     if (s.track && s.track.kind === 'video') {
+                        if (typeof s.requestKeyFrame === 'function') {
+                            await s.requestKeyFrame();
+                            continue;
+                        }
                         const params = s.getParameters();
                         if (!params.encodings) params.encodings = [{}];
-                        // 强制切换 degradationPreference，触发编码器刷新 → 新 IDR
+                        // 不支持 requestKeyFrame 时切换 degradationPreference，触发编码器刷新 → 新 IDR
                         params.degradationPreference = params.degradationPreference === 'balanced'
                             ? 'maintain-framerate'
                             : 'balanced';

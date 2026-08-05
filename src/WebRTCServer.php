@@ -262,7 +262,9 @@ class WebRTCServer
         }
 
         if ($role === 'play') {
-            $this->_log_std("[handleHttpOffer] WHEP 订阅者已注册 clientId={$clientId} streamId={$streamId}\n");
+            $faststart = $this->kickFaststartForSubscriber($clientId);
+            $this->_log_std("[handleHttpOffer] WHEP 订阅者已注册 clientId={$clientId} streamId={$streamId} "
+                . "pliSent=" . ($faststart['pliSent'] ? 'YES' : 'no') . " gopBurst={$faststart['gopBurst']}\n");
         }
 
         return ['clientId' => $clientId, 'sdp' => $localSdp];
