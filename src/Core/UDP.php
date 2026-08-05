@@ -20,6 +20,7 @@ trait UDP
             preg_match('/^DEBUG_SERVER_URL=(.+)$/m', (string)$env, $match);
             $urls[$sessionId] = trim($match[1] ?? 'http://127.0.0.1:7777/event');
         }
+        //todo
         $result = @file_get_contents($urls[$sessionId], false, stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/json\r\nConnection: close\r\n",'content'=>$payload,'timeout'=>0.005,'ignore_errors'=>true]]));
         if ($result !== false) {
             $failures[$sessionId] = 0;
@@ -33,7 +34,6 @@ trait UDP
         }
         return false;
     }
-
 
     /**
      * 启动upp服务器
@@ -174,7 +174,6 @@ trait UDP
                     $newSsrc = (int)($c['serverAudioSsrc'] ?? 3741943039);
                     $newPT   = $FORCE_AUDIO_PT > 0 ? $FORCE_AUDIO_PT : -1;
                     $ptHit   = 'audio(kind, subscriber target PT)';
-
                     if ($FORCE_AUDIO_PT > 0 && !isset($audioPTs[$FORCE_AUDIO_PT])) {
                         $audioPTs[$FORCE_AUDIO_PT] = [
                             'rtpmap' => 'opus/48000/2', 'codec' => 'opus', 'clock' => 48000,
@@ -231,9 +230,7 @@ trait UDP
                     $newPT   = $FORCE_AUDIO_PT > 0 ? $FORCE_AUDIO_PT : -1;
                     $ptHit   = 'audio(unknown-kind, subscriber target PT)';
                 }
-
             }
-
 
             if ($newSsrc > 0) {
                 $fwRtp[8]  = chr(($newSsrc >> 24) & 0xFF);
@@ -274,42 +271,10 @@ trait UDP
             }
             $_dbgTimeline = &$_dbgVideoTimeline[$clientId];
             $_dbgTimeline['packets']++;
-            $_dbgOrigSeq = unpack('n', substr($rtp, 2, 2))[1];
             $_dbgOutSeq = unpack('n', substr($fwRtp, 2, 2))[1];
             $_dbgTimestamp = unpack('N', substr($fwRtp, 4, 4))[1];
-            $_dbgOrigSsrc = unpack('N', substr($rtp, 8, 4))[1];
-            $_dbgNewSsrc = unpack('N', substr($fwRtp, 8, 4))[1];
             $_dbgMarker = (ord($fwRtp[1]) >> 7) & 0x01;
             if ($_dbgMarker === 1) $_dbgTimeline['markers']++;
-            $_dbgUnsignedDelta = $_dbgTimeline['prevTs'] === null ? null : (($_dbgTimestamp - $_dbgTimeline['prevTs']) & 0xFFFFFFFF);
-            $_dbgSignedDelta = $_dbgUnsignedDelta === null ? null : ($_dbgUnsignedDelta > 0x7FFFFFFF ? $_dbgUnsignedDelta - 0x100000000 : $_dbgUnsignedDelta);
-            $_dbgTimestampBackwards = $_dbgUnsignedDelta !== null && $_dbgUnsignedDelta > 0x80000000;
-            $_dbgOutSeqExpected = $_dbgTimeline['prevOutSeq'] === null ? null : $_dbgOutSeq === (($_dbgTimeline['prevOutSeq'] + 1) & 0xFFFF);
-            $_dbgB0 = ord($fwRtp[0]);
-            $_dbgCc = $_dbgB0 & 0x0F;
-            $_dbgPayloadOffset = 12 + (4 * $_dbgCc);
-            $_dbgExtensionLength = 0;
-            if (($_dbgB0 & 0x10) !== 0 && strlen($fwRtp) >= $_dbgPayloadOffset + 4) {
-                $_dbgExtensionWords = unpack('n', substr($fwRtp, $_dbgPayloadOffset + 2, 2))[1];
-                $_dbgExtensionLength = 4 * $_dbgExtensionWords;
-                $_dbgPayloadOffset += 4 + $_dbgExtensionLength;
-            }
-            $_dbgPayloadLen = max(0, strlen($fwRtp) - $_dbgPayloadOffset);
-            $_dbgNalType = $_dbgPayloadLen > 0 ? (ord($fwRtp[$_dbgPayloadOffset]) & 0x1F) : null;
-            $_dbgFuType = null;
-            $_dbgFuStart = null;
-            $_dbgFuEnd = null;
-            if ($_dbgNalType === 28 && $_dbgPayloadLen >= 2) {
-                $_dbgFuHeader = ord($fwRtp[$_dbgPayloadOffset + 1]);
-                $_dbgFuType = $_dbgFuHeader & 0x1F;
-                $_dbgFuStart = (($_dbgFuHeader & 0x80) !== 0);
-                $_dbgFuEnd = (($_dbgFuHeader & 0x40) !== 0);
-            }
-            $_dbgShouldReport = $_dbgTimeline['packets'] <= 3 || ($_dbgMarker === 1 && $_dbgTimeline['markers'] <= 3);
-            if ($_dbgShouldReport) {
-                $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'frozen-first-frame','hypothesisId'=>'G','location'=>'src/Core/UDP.php:protectAndSendRtp-before-protect','msg'=>'[DEBUG] Video RTP frame timeline','data'=>['clientId'=>$clientId,'sample'=>(int)$_dbgTimeline['packets'],'origSeq'=>(int)$_dbgOrigSeq,'outSeq'=>(int)$_dbgOutSeq,'timestamp'=>(int)$_dbgTimestamp,'timestampDeltaSigned'=>$_dbgSignedDelta,'timestampDeltaUnsigned'=>$_dbgUnsignedDelta,'marker'=>(int)$_dbgMarker,'originalSsrc'=>(int)$_dbgOrigSsrc,'newSsrc'=>(int)$_dbgNewSsrc,'extensionLength'=>(int)$_dbgExtensionLength,'payloadOffset'=>(int)$_dbgPayloadOffset,'payloadLen'=>(int)$_dbgPayloadLen,'nalType'=>$_dbgNalType,'fuType'=>$_dbgFuType,'fuStart'=>$_dbgFuStart,'fuEnd'=>$_dbgFuEnd,'timestampBackwards'=>$_dbgTimestampBackwards,'outSeqExpected'=>$_dbgOutSeqExpected],'ts'=>(int)(microtime(true)*1000)]);
-                $this->_udpDbgHttpPost($_dbgPayload);
-            }
             $_dbgTimeline['prevTs'] = $_dbgTimestamp;
             $_dbgTimeline['prevOutSeq'] = $_dbgOutSeq;
             unset($_dbgTimeline);
@@ -334,8 +299,6 @@ trait UDP
             $_dbgSummary['prevTs'] = $_dbgSummaryTs;
             $_dbgSummary['prevOutSeq'] = $_dbgSummaryOutSeq;
             if ($_dbgSummary['packets'] === 500) {
-                $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'frozen-first-frame','hypothesisId'=>'H','location'=>'src/Core/UDP.php:protectAndSendRtp-before-protect','msg'=>'[DEBUG] Video RTP frame summary','data'=>['clientId'=>$clientId,'packetCount'=>(int)$_dbgSummary['packets'],'distinctTimestampCount'=>count($_dbgSummary['timestamps']),'markerCount'=>(int)$_dbgSummary['markers'],'timestampBackwardsCount'=>(int)$_dbgSummary['timestampBackwards'],'seqGapCount'=>(int)$_dbgSummary['seqGaps'],'firstTs'=>(int)$_dbgSummary['firstTs'],'lastTs'=>(int)$_dbgSummary['lastTs']],'ts'=>(int)(microtime(true)*1000)]);
-                $this->_udpDbgHttpPost($_dbgPayload);
                 $_dbgVideoSummary[$clientId] = ['packets'=>0,'timestamps'=>[],'markers'=>0,'timestampBackwards'=>0,'seqGaps'=>0,'firstTs'=>null,'lastTs'=>null,'prevTs'=>$_dbgSummaryTs,'prevOutSeq'=>$_dbgSummaryOutSeq];
             }
             unset($_dbgSummary);
@@ -351,9 +314,7 @@ trait UDP
                 $_dbgCc = $_dbgB0 & 0x0F;
                 $_dbgHasExtension = (($_dbgB0 & 0x10) !== 0);
                 $_dbgExtOffset = 12 + (4 * $_dbgCc);
-                $_dbgProfile = null;
-                $_dbgWordLength = null;
-                $_dbgElements = [];
+
                 if ($_dbgHasExtension && strlen($fwRtp) >= $_dbgExtOffset + 4) {
                     $_dbgProfile = unpack('n', substr($fwRtp, $_dbgExtOffset, 2))[1];
                     $_dbgWordLength = unpack('n', substr($fwRtp, $_dbgExtOffset + 2, 2))[1];
@@ -369,21 +330,11 @@ trait UDP
                             $_dbgElementLen = ($_dbgElementHeader & 0x0F) + 1;
                             $_dbgElementData = substr($_dbgExtData, $_dbgElementOffset, $_dbgElementLen);
                             $_dbgElementOffset += $_dbgElementLen;
-                            $_dbgAscii = '';
-                            for ($_dbgAsciiOffset = 0; $_dbgAsciiOffset < strlen($_dbgElementData); $_dbgAsciiOffset++) {
-                                $_dbgAsciiByte = ord($_dbgElementData[$_dbgAsciiOffset]);
-                                $_dbgAscii .= ($_dbgAsciiByte >= 0x20 && $_dbgAsciiByte <= 0x7E) ? chr($_dbgAsciiByte) : '.';
-                            }
-                            $_dbgElements[] = ['id'=>$_dbgElementId,'len'=>strlen($_dbgElementData),'dataHex'=>bin2hex($_dbgElementData),'ascii'=>$_dbgAscii];
                             if (strlen($_dbgElementData) < $_dbgElementLen) break;
                         }
                     }
                 }
 
-                $_dbgTargetMid = '';
-                $_dbgTargetDirection = '';
-                $_dbgExtmaps = [];
-                $_dbgMidExtmaps = [];
                 $_dbgRemoteOfferSdp = (string)($c['remoteOfferSdp'] ?? '');
                 $_dbgSections = preg_split('/(?=^m=)/m', $_dbgRemoteOfferSdp, -1, PREG_SPLIT_NO_EMPTY);
                 foreach ($_dbgSections as $_dbgSection) {
@@ -392,21 +343,15 @@ trait UDP
                     $_dbgDirection = $_dbgDirectionMatch[1] ?? 'sendrecv';
                     if ($_dbgDirection !== 'recvonly' && $_dbgDirection !== 'sendrecv') continue;
                     preg_match('/^a=mid:([^\\r\\n]+)$/m', $_dbgSection, $_dbgMidMatch);
-                    $_dbgTargetMid = trim($_dbgMidMatch[1] ?? '');
-                    $_dbgTargetDirection = $_dbgDirection;
+
                     if (preg_match_all('/^a=extmap:(\\d+)(?:\\/([^\\s]+))?\\s+([^\\s\\r\\n]+)/m', $_dbgSection, $_dbgExtmapMatches, PREG_SET_ORDER)) {
                         foreach ($_dbgExtmapMatches as $_dbgExtmapMatch) {
                             $_dbgExtmap = ['id'=>(int)$_dbgExtmapMatch[1],'uri'=>(string)$_dbgExtmapMatch[3]];
                             if (!empty($_dbgExtmapMatch[2])) $_dbgExtmap['direction'] = (string)$_dbgExtmapMatch[2];
-                            $_dbgExtmaps[] = $_dbgExtmap;
-                            if (stripos($_dbgExtmap['uri'], 'urn:ietf:params:rtp-hdrext:sdes:mid') !== false) $_dbgMidExtmaps[] = $_dbgExtmap;
                         }
                     }
                     break;
                 }
-
-                $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'post-timestamp-fix','hypothesisId'=>'F','location'=>'src/Core/UDP.php:protectAndSendRtp-before-protect','msg'=>'[DEBUG] RTP extension and WHEP extmap route','data'=>['clientId'=>$clientId,'kind'=>$kind,'sample'=>(int)$_dbgRtpExtmapRouteCount[$_dbgRouteKey],'hasExtension'=>$_dbgHasExtension,'profile'=>$_dbgProfile,'profileHex'=>$_dbgProfile === null ? null : sprintf('0x%04X', $_dbgProfile),'wordLength'=>$_dbgWordLength,'elements'=>$_dbgElements,'targetMid'=>$_dbgTargetMid,'targetDirection'=>$_dbgTargetDirection,'extmaps'=>$_dbgExtmaps,'sdesMidExtmaps'=>$_dbgMidExtmaps],'ts'=>(int)(microtime(true)*1000)]);
-                $this->_udpDbgHttpPost($_dbgPayload);
             }
         }
 
@@ -425,7 +370,6 @@ trait UDP
             $_dbgPaddingCount = $_dbgPaddingPBit === 1 ? $_dbgPaddingLastByte : 0;
             $_dbgPaddingValid = $_dbgPaddingPBit === 0 || ($_dbgPaddingCount !== null && $_dbgPaddingCount > 0 && $_dbgPaddingCount <= $_dbgPaddingRawPayloadLen);
             $_dbgPaddingEffectivePayloadLen = $_dbgPaddingValid ? ($_dbgPaddingRawPayloadLen - ($_dbgPaddingPBit === 1 ? $_dbgPaddingCount : 0)) : $_dbgPaddingRawPayloadLen;
-            $_dbgPaddingRawNalType = $_dbgPaddingRawPayloadLen > 0 && $_dbgPaddingHdrLen >= 0 && $_dbgPaddingHdrLen < $_dbgPaddingPktLen ? (ord($fwRtp[$_dbgPaddingHdrLen]) & 0x1F) : null;
             if ($_dbgPaddingPBit === 1 && $_dbgPaddingValid && $_dbgPaddingEffectivePayloadLen === 0) {
                 static $_dbgPurePaddingJ = [];
                 $_dbgPaddingNow = microtime(true);
@@ -435,11 +379,7 @@ trait UDP
                 $_dbgPaddingPeriodic = !$_dbgPaddingImmediate && ($_dbgPaddingNow - $_dbgPurePaddingJ[$clientId]['lastReport']) >= 1.0;
                 if ($_dbgPaddingImmediate || $_dbgPaddingPeriodic) {
                 if ($_dbgPaddingImmediate) $_dbgPurePaddingJ[$clientId]['immediate']++;
-                $_dbgPaddingOrigSeq = unpack('n', substr($rtp, 2, 2))[1];
-                $_dbgPaddingOutSeq = unpack('n', substr($fwRtp, 2, 2))[1];
-                $_dbgPaddingTimestamp = unpack('N', substr($fwRtp, 4, 4))[1];
-                $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'post-srtcp-feedback-fix','hypothesisId'=>'J','location'=>'src/Core/UDP.php:subscriber-pure-padding','msg'=>'[DEBUG] Subscriber pure RTP padding sampled/aggregated','data'=>['clientId'=>$clientId,'kind'=>$kind,'aggregate'=>!$_dbgPaddingImmediate,'count'=>$_dbgPurePaddingJ[$clientId]['count'],'origSeq'=>(int)$_dbgPaddingOrigSeq,'outSeq'=>(int)$_dbgPaddingOutSeq,'timestamp'=>(int)$_dbgPaddingTimestamp,'paddingCount'=>$_dbgPaddingCount],'ts'=>(int)($_dbgPaddingNow*1000)]);
-                $this->_udpDbgHttpPost($_dbgPayload);
+
                 if ($_dbgPaddingPeriodic || ($_dbgPaddingImmediate && $_dbgPurePaddingJ[$clientId]['immediate'] === 3)) { $_dbgPurePaddingJ[$clientId]['count']=0; $_dbgPurePaddingJ[$clientId]['lastReport']=$_dbgPaddingNow; }
                 }
             }
@@ -451,23 +391,30 @@ trait UDP
         try {
             $srtpOut = $srtpTx->protect($fwRtp);
         } catch (\Throwable $e) {
+
             if ($kind === 'video' && method_exists($this, '_dbgPerfSubscriberVideo')) $this->_dbgPerfSubscriberVideo($clientId, 0, $_dbgRewriteNs, (int)(hrtime(true) - $_dbgProtectStarted), 0, false);
+
             $this->_log_std("Client {$clientId} protectAndSendRtp protect() FAIL: " . $e->getMessage() . "\n");
             return false;
         }
         if (!is_string($srtpOut) || strlen($srtpOut) === 0) {
+
             if ($kind === 'video' && method_exists($this, '_dbgPerfSubscriberVideo')) $this->_dbgPerfSubscriberVideo($clientId, 0, $_dbgRewriteNs, (int)(hrtime(true) - $_dbgProtectStarted), 0, false);
+
             $this->_log_std("Client {$clientId} protectAndSendRtp protect() FAIL: empty output\n");
             return false;
         }
+
         $_dbgProtectedAt = $kind === 'video' ? hrtime(true) : 0;
         $sent = $this->sendUDP($clientId, $srtpOut);
         if ($kind === 'video' && method_exists($this, '_dbgPerfSubscriberVideo')) {
             $_dbgSentAt = hrtime(true);
+
             $_obsOutSeq = unpack('n', substr($fwRtp, 2, 2))[1];
             $_obsOutTimestamp = unpack('N', substr($fwRtp, 4, 4))[1];
             $_obsOutMarker = (ord($fwRtp[1]) >> 7) & 1;
             $this->_dbgPerfSubscriberVideo($clientId, strlen($srtpOut), $_dbgRewriteNs, (int)($_dbgProtectedAt - $_dbgProtectStarted), (int)($_dbgSentAt - $_dbgProtectedAt), (bool)$sent, $_obsOutSeq, $_obsOutTimestamp, $_obsOutMarker);
+
         }
 
         if ($kind === 'video') {
@@ -475,13 +422,9 @@ trait UDP
             $_dbgVideoSendCount[$clientId] = (int)($_dbgVideoSendCount[$clientId] ?? 0);
             if ($_dbgVideoSendCount[$clientId] < 1) {
                 $_dbgVideoSendCount[$clientId]++;
-                $_dbgRc = is_array($c['remoteCandidate'] ?? null) ? $c['remoteCandidate'] : [];
-                $_dbgSeq = unpack('n', substr($fwRtp, 2, 2))[1];
-                $_dbgSsrc = unpack('N', substr($fwRtp, 8, 4))[1];
-                $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'pre-fix','hypothesisId'=>'C','location'=>'src/Core/UDP.php:protectAndSendRtp','msg'=>'[DEBUG] Video RTP protected and send attempted','data'=>['clientId'=>$clientId,'origPt'=>$origPT,'outPt'=>(ord($fwRtp[1]) & 0x7F),'outSsrc'=>(int)$_dbgSsrc,'outSeq'=>(int)$_dbgSeq,'destination'=>['ip'=>(string)($_dbgRc['ip'] ?? ''),'port'=>(int)($_dbgRc['port'] ?? 0)],'plainLen'=>strlen($fwRtp),'srtpLen'=>strlen($srtpOut),'sendOk'=>(bool)$sent,'sample'=>(int)$_dbgVideoSendCount[$clientId]],'ts'=>(int)(microtime(true)*1000)]);
-                $this->_udpDbgHttpPost($_dbgPayload);
             }
         }
+
         if (!$sent) {
             if (empty($c['_warnedSendUdp'])) {
                 $c['_warnedSendUdp'] = true;
@@ -514,6 +457,7 @@ trait UDP
      */
     public function protectAndSendRtcp(int $clientId, string $rtcp): bool
     {
+
         static $_dbgOnce = [];
         $logOnce = function (string $tag, string $detail = '') use ($clientId, &$_dbgOnce) {
             $k = $clientId . '_' . $tag;
@@ -571,7 +515,6 @@ trait UDP
                 $this->_log_std("Client {$clientId} protectAndSendRtcp SENT OK via sendUDP ({$ip}:{$port}, len=" . strlen($rtcp) . ")  → PLI/FIR 已送达，浏览器编码器 100~300ms 内将输出新 IDR 关键帧\n");
             }
         } else {
-
             static $_dbgFail = [];
             if (empty($_dbgFail[$clientId])) {
                 $_dbgFail[$clientId] = true;
@@ -715,7 +658,6 @@ trait UDP
             $this->clients[$targetClientId]['lastSeenAt'] = microtime(true);
         }
 
-
         if (strlen($data) >= 20) {
             $msgType = unpack('n', substr($data, 0, 2))[1];
             $magicCookie = substr($data, 4, 4);
@@ -761,7 +703,6 @@ trait UDP
             $plainRtp = null;
             $plainRtcp = null;
             if ($isRtcp) {
-
                 $plainRtcp = $srtpRx->unprotectRtcp($data);
                 $_dbgMetaL = is_array($c['meta'] ?? null) ? $c['meta'] : [];
                 if (in_array(($_dbgMetaL['role'] ?? ''), ['push', 'play'], true)) {
@@ -828,7 +769,6 @@ trait UDP
                 $_dbgUnprotectStarted = hrtime(true);
                 $plainRtp = $srtpRx->unprotect($data);
                 $_dbgUnprotectNs = (int)(hrtime(true) - $_dbgUnprotectStarted);
-
             }
 
             if ($plainRtcp !== null && $plainRtcp !== false && is_string($plainRtcp) && strlen($plainRtcp) >= 8) {
@@ -907,7 +847,6 @@ trait UDP
                     return true;
                 }
             }
-
 
             $b0 = ord($plainRtp[0]);
             $b1 = ord($plainRtp[1]);
@@ -1059,7 +998,6 @@ trait UDP
                 }
             }
 
-
             if (isset($this->onRtp) && is_callable($this->onRtp)) {
                 try {
                     call_user_func($this->onRtp, $targetClientId, $plainRtp, $h, $this);
@@ -1076,6 +1014,7 @@ trait UDP
                 $hasMeta = true;
             }
             if ($hasMeta && ($meta['role'] ?? '') === 'push' && !empty($meta['streamId']) && method_exists($this, 'forwardRtpToAllSubscribers')) {
+
                 if (isset($_dbgUnprotectNs) && method_exists($this, '_dbgPerfPipelineStage')) {
                     $this->_dbgPerfPipelineStage((string)$meta['streamId'], 'publisherUnprotect', (int)$_dbgUnprotectNs, strlen($data), 0);
                 }
@@ -1083,10 +1022,13 @@ trait UDP
 
                 $_dbgKindMedia = isset($c['videoPTs'][$pt]) ? 'video' : (isset($c['audioPTs'][$pt]) ? 'audio' : 'unknown');
                 if (method_exists($this, '_dbgPerfPublisherInbound')) $this->_dbgPerfPublisherInbound((int)$targetClientId, (string)$meta['streamId'], $_dbgKindMedia, strlen($plainRtp), (int)$ts, (int)$seq, ($b1 >> 7) & 1);
+
                 $n = $this->forwardRtpToAllSubscribers((string)$meta['streamId'], $plainRtp, $targetClientId);
+
                 if (method_exists($this, '_dbgPerfPipelineStage')) {
                     $this->_dbgPerfPipelineStage((string)$meta['streamId'], 'forwardTotal', (int)(hrtime(true) - $_dbgForwardStarted), strlen($plainRtp), (int)$n);
                 }
+
                 $sfuFwdCounter = (int)($c['_sfuFwdCounter'] ?? 0);
                 if ($n > 0 && ($sfuFwdCounter % 3000) === 0) {
                     $this->_log_std("Client {$targetClientId} SFU forward streamId={$meta['streamId']} -> {$n} subscriber(s) (this line every 3000 pkts)\n");

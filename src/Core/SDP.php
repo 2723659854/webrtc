@@ -44,6 +44,7 @@ trait SDP
     {
         $forceVideoAudioDefault = !empty($options['forceVideoAudioDefault']);
         $isWhep = !empty($options['whep']);
+        $preferLoopback = !empty($options['preferLoopback']);
 
         $customVideoSsrc  = isset($options['serverVideoSsrc'])  ? (int)$options['serverVideoSsrc']  : 0;
         $customAudioSsrc  = isset($options['serverAudioSsrc'])  ? (int)$options['serverAudioSsrc']  : 0;
@@ -51,6 +52,10 @@ trait SDP
         $customStreamId   = isset($options['msidStream'])       ? (string)$options['msidStream']     : '';
         $customVideoTrack = isset($options['msidVideoTrack'])   ? (string)$options['msidVideoTrack'] : '';
         $customAudioTrack = isset($options['msidAudioTrack'])   ? (string)$options['msidAudioTrack'] : '';
+        $h264ProfileLevelId = strtolower((string)($options['h264ProfileLevelId'] ?? '42e01f'));
+        if (!preg_match('/^[0-9a-f]{6}$/', $h264ProfileLevelId)) {
+            $h264ProfileLevelId = '42e01f';
+        }
 
         $fingerprint = $this->generateFingerprint();
         $localIP = $this->getLocalIP();
@@ -102,9 +107,7 @@ trait SDP
         if ($hasVideoOffer || $hasAudioOffer) {
             $_injectDefaultVideoPTs($videoPayloadTypes, $audioPayloadTypes, $hasVideoOffer, $hasAudioOffer);
         }
-
         /** 这里是兼容只创建datachannel传输消息，而不传输音视频消息的 */
-
         if ($forceVideoAudioDefault && !$hasVideoOffer && !$hasAudioOffer) {
             $hasVideoOffer = true;
             $hasAudioOffer = true;
@@ -196,6 +199,7 @@ trait SDP
                 if (preg_match('/^a=mid:(\S+)/m', $audioSection, $amid)) {
                     $audioMid = $amid[1];
                 }
+
                 if (preg_match('/^a=sendrecv/m', $audioSection)) {
                     $audioOfferDir = 'sendrecv';
                 } elseif (preg_match('/^a=sendonly/m', $audioSection)) {
@@ -205,6 +209,7 @@ trait SDP
                 } elseif (preg_match('/^a=inactive/m', $audioSection)) {
                     $audioOfferDir = 'inactive';
                 } else {
+
                     $audioOfferDir = 'sendrecv';
                 }
                 $lines = explode("\n", str_replace("\r\n", "\n", $audioSection));
@@ -230,6 +235,7 @@ trait SDP
         }
 
         $videoMid = $_pickFreeMid('1');
+
         if (!isset($videoPayloadTypes) || !is_array($videoPayloadTypes)) $videoPayloadTypes = [];
         $videoOfferDir = 'sendrecv';
         $videoSection = '';
@@ -251,7 +257,7 @@ trait SDP
                 if (preg_match('/^a=mid:(\S+)/m', $videoSection, $vmid)) {
                     $videoMid = $vmid[1];
                 }
-
+                // ---- RFC 3264 解析 Offer video direction ----
                 if (preg_match('/^a=sendrecv/m', $videoSection)) {
                     $videoOfferDir = 'sendrecv';
                 } elseif (preg_match('/^a=sendonly/m', $videoSection)) {
@@ -314,11 +320,17 @@ trait SDP
         $transportBlock .= "a=fingerprint:sha-256 {$fingerprint}\r\n";
         $transportBlock .= "a=setup:{$localSetup}\r\n";
         if ($localIP != "127.0.0.1") {
-            $transportBlock .= "a=candidate:1 1 UDP 2130706431 {$localIP} " . $this->udpPort . " typ host\r\n";
-            $transportBlock .= "a=candidate:2 1 UDP 2130706431 127.0.0.1 " . $this->udpPort . " typ host\r\n";
+            if ($preferLoopback) {
+                $transportBlock .= "a=candidate:1 1 UDP 2130706431 127.0.0.1 " . $this->udpPort . " typ host\r\n";
+                $transportBlock .= "a=candidate:2 1 UDP 2130706175 {$localIP} " . $this->udpPort . " typ host\r\n";
+            } else {
+                $transportBlock .= "a=candidate:1 1 UDP 2130706431 {$localIP} " . $this->udpPort . " typ host\r\n";
+            }
         } else {
             $transportBlock .= "a=candidate:1 1 UDP 2130706431 127.0.0.1 " . $this->udpPort . " typ host\r\n";
         }
+        $this->_log_std("[ICE candidates] preferLoopback=" . ($preferLoopback ? 'yes' : 'no')
+            . " requestCandidate=" . ($preferLoopback ? '127.0.0.1' : $localIP) . "\n");
         $transportBlock .= "a=end-of-candidates\r\n";
 
         $sections = [];
@@ -352,7 +364,7 @@ trait SDP
                 'rtpmap' => 'H264/90000',
                 'codec'  => 'H264',
                 'clock'  => 90000,
-                'fmtp'   => 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+                'fmtp'   => 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=' . $h264ProfileLevelId,
             ];
             $validPTInfo = [$fixedVideoPT => $fixedVideoInfo];
             $videoPTSet = [$fixedVideoPT => $fixedVideoInfo];
@@ -378,7 +390,6 @@ trait SDP
                             || $extUri === 'urn:ietf:params:rtp-hdrext:transport-wide-cc') continue;
                         $extLines[(int)$m[1]] = $vl;
                     } elseif (preg_match('/^a=rtcp-fb:(?:\*|\d+)\s+nack\s+pli\s*$/i', $vl)) {
-                        // 只接收 Offer 中与本地实现一致的 nack pli；其余反馈能力不复制。
                         if (!isset($rtcpFbLines[$fixedVideoPT])) $rtcpFbLines[$fixedVideoPT] = [];
                         $rtcpFbLines[$fixedVideoPT][] = 'a=rtcp-fb:' . $fixedVideoPT . ' nack pli';
                     }
@@ -397,15 +408,13 @@ trait SDP
             $vidSec .= "a=ssrc:{$mainSsrc} mslabel:{$mslabel}\r\n";
             $vidSec .= "a=ssrc:{$mainSsrc} label:{$label}\r\n";
             $vidSec .= "a=rtpmap:{$fixedVideoPT} H264/90000\r\n";
-            $vidSec .= "a=fmtp:{$fixedVideoPT} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\n";
+            $vidSec .= "a=fmtp:{$fixedVideoPT} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={$h264ProfileLevelId}\r\n";
             $vidSec .= "a=rtcp-fb:{$fixedVideoPT} nack pli\r\n";
-
             if (!empty($rtcpFbLines[$fixedVideoPT])) {
                 $_seenRtcpFb = [];
                 foreach ($rtcpFbLines[$fixedVideoPT] as $fbl) {
                     if (!isset($_seenRtcpFb[$fbl])) {
                         $_seenRtcpFb[$fbl] = true;
-
                         if (preg_match('/^a=rtcp-fb:' . $fixedVideoPT . '\s+nack\s+pli\s*$/i', $fbl)) {
                             continue;
                         }
@@ -419,7 +428,6 @@ trait SDP
 
         if ($hasAudioOffer) {
             $audSec = "";
-
             $fixedOpusPT = 111;
             $fixedTelPT   = 126;
             $fixedCnPT    = 127;
@@ -554,7 +562,6 @@ trait SDP
             }
         }
 
-
         $sdp = preg_replace("/\r\n|\r|\n/", "\r\n", rtrim($sdp, "\r\n")) . "\r\n";
 
         if ($isWhep) {
@@ -677,6 +684,7 @@ trait SDP
             foreach ($orderedAllPts as $pt) {
                 $c = $ptCodecMap[$pt] ?? '';
                 if ($c !== '' && in_array($c, $videoH264Codes, true)) {
+
                     $videoPTs[$pt] = $ptInfoMap[$pt]
                         ?? [
                             'rtpmap' => ($c === 'h264') ? 'H264/90000' : 'AVC/90000',
@@ -721,6 +729,7 @@ trait SDP
                     if (isset($ptInfoMap[$pt])) $ptInfoMap[$pt]['fmtp'] = trim($fr[2]);
                 }
             }
+
             $audioAllowedCodes = ['opus' => true, 'telephone-event' => true, 'cn' => true];
             $orderedAllPts = [];
             if (preg_match('/^(m=audio\s+.*)$/m', $sec, $mLine)) {
@@ -735,6 +744,7 @@ trait SDP
             foreach ($orderedAllPts as $pt) {
                 $c = $ptCodecMap[$pt] ?? '';
                 if ($c !== '' && isset($audioAllowedCodes[$c])) {
+
                     $audioPTs[$pt] = $ptInfoMap[$pt]
                         ?? (function() use ($c) {
                             if ($c === 'telephone-event') {
@@ -753,6 +763,7 @@ trait SDP
             if ($_firstOpusPT !== null) {
                 $primaryAudioPT = $_firstOpusPT;
             } elseif (!empty($orderedAllPts)) {
+
                 $primaryAudioPT = 111;
                 $audioPTs = [
                     111 => ['rtpmap' => 'opus/48000/2',       'codec' => 'opus',            'clock' => 48000,

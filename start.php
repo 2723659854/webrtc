@@ -2,34 +2,20 @@
 /**
  * @purpose WebRTC SDK 启动示例
  * @author yanglong
- * @note 此文件为示例文件，请根据你的项目实际需求创建启动文件
- * @note
- * 启动命令: php start.php
- *
- *  浏览器访问:
- *    - 推流(push):  http://127.0.0.1:8088/push.html
- *    - 拉流(play):  http://127.0.0.1:8088/play.html
- *
- *  核心能力:
- *    - DataChannel 文本消息收发 (onOpen / onmessage)
- *    - 音视频推流拉流 (SRTP over WebRTC SFU)
- *        - push 端 role=push + streamId=房间号
- *        - play 端 role=play + streamId=房间号
- *        - 服务端自动做 SRTP 解密 + SSRC 重写 + 重新加密转发给所有同房间的订阅者
- *
- *  本文档演示了所有 WebRTCServer 暴露出来的事件接口, 所有事件均支持 "可跳过默认实现"
- *  (通过引用参数 &$handled = true 即可).
+ * @command php start.php
  */
 
 use Xiaosongshu\Webrtc\WebRTCServer;
 
 require_once __DIR__."/vendor/autoload.php";
 
-$server = new WebRTCServer(8088, 8089, 3478, __DIR__."/debug.log",__DIR__);
-
+$server = new WebRTCServer(8088, 8089, 3478, __DIR__."/debug.log");
+// 设置公网ip，当对外提供服务的时候务必设置
+$server->publicIp = '127.0.0.1';
+// 是否开发模式
+$server->isDev = false;
 
 $rooms = [];
-
 
 $server->onOpen = function ($label, $clientId, WebRTCServer $srv) use (&$rooms) {
     $total = count($srv->getClientIds());
@@ -37,7 +23,6 @@ $server->onOpen = function ($label, $clientId, WebRTCServer $srv) use (&$rooms) 
     echo $msg;
     $srv->_log_std($msg);
 };
-
 
 $server->onJoin = function (int $clientId, array $msg, WebRTCServer $srv, &$handled) use (&$rooms) {
     $role     = (string)($msg['role']     ?? '');
@@ -71,8 +56,6 @@ $server->onJoin = function (int $clientId, array $msg, WebRTCServer $srv, &$hand
         $srv->_log_std($msg);
     }
 
-    // 不设置 $handled=true → 继续走服务端默认分支:
-    // → setClientMeta(role/streamId) → sendJoined → _fireSubscriberIfReady (自动下发 SFU offer)
 };
 
 $server->onPublisher = function (int $clientId, array $ctx, WebRTCServer $srv) use (&$rooms) {
@@ -138,7 +121,6 @@ $server->onSubscriber = function (int $clientId, array $ctx, WebRTCServer $srv) 
     $srv->setClientMeta($clientId, 'subscriberHandled', 'true');
 
     $offerSent = false;
-
     if ($streamId !== '') {
 
         $currentPushId = $pushId;
@@ -160,7 +142,6 @@ $server->onSubscriber = function (int $clientId, array $ctx, WebRTCServer $srv) 
     $kick1 = $srv->kickFaststartForSubscriber($clientId);
     $srv->_log_std("[onSubscriber] subscriberId={$clientId} kickFaststart(T+0 join) pliSent=" . ($kick1['pliSent']?'yes':'no') . " gopBurst=" . (int)$kick1['gopBurst'] . " offerSent=" . ($offerSent?'yes':'no') . "\n");
 };
-
 
 $server->onOffer = function (int $clientId, string $offerSdp, string $answerSdp, WebRTCServer $srv) {
     $role = (string)$srv->getClientMeta($clientId, 'role', 'unknown');
@@ -210,7 +191,7 @@ $server->onMediaConnected = function (int $clientId, array $rtp, WebRTCServer $s
 
 $server->onSignaling = function (int $clientId, array $msg, WebRTCServer $srv, &$handled) {
     $type = (string)($msg['type'] ?? '?');
-    // echo "[onSignaling] client={$clientId} type={$type}\r\n";
+    echo "[onSignaling] client={$clientId} type={$type}\r\n";
 };
 
 $server->onLeave = function (int $clientId, WebRTCServer $srv) use (&$rooms) {
@@ -224,6 +205,7 @@ $server->onLeave = function (int $clientId, WebRTCServer $srv) use (&$rooms) {
                 $msg = "[onLeave] 推流端 client={$clientId} 离开房间 streamId={$streamId} (无推流)\n";
                 echo $msg;
                 $srv->_log_std($msg);
+
                 $subIds = array_keys($rooms[$streamId]['subscribers'] ?? []);
                 if (!empty($subIds)) {
                     $srv->broadcastSignaling($subIds, ['type' => 'publisher-left', 'streamId' => $streamId]);
@@ -238,6 +220,7 @@ $server->onLeave = function (int $clientId, WebRTCServer $srv) use (&$rooms) {
             echo $msg;
             $srv->_log_std($msg);
         }
+
         if (($rooms[$streamId]['pushId'] ?? null) === null && empty($rooms[$streamId]['subscribers'])) {
             unset($rooms[$streamId]);
             $msg = "[onLeave] 空房间已回收 streamId={$streamId}\n";
@@ -252,7 +235,7 @@ $server->onLeave = function (int $clientId, WebRTCServer $srv) use (&$rooms) {
 };
 
 $server->onClose = function ($id, WebRTCServer $srv) {
-    // echo "[onClose] WebSocket closed client={$id}\r\n";
+    echo "[onClose] WebSocket closed client={$id}\r\n";
 };
 
 $server->onmessage = function (string $message, int $clientId, WebRTCServer $srv) use (&$rooms) {
@@ -262,13 +245,11 @@ $server->onmessage = function (string $message, int $clientId, WebRTCServer $srv
     $label    = (string)$srv->getClientMeta($clientId, 'label', 'client#'.$clientId);
 
     $srv->_log_std("[onmessage] client={$clientId} label={$label} role={$role} streamId={$streamId} msg=\"{$trimMsg}\"\n");
-
     $reply = "服务器收到：\"{$trimMsg}\" （时间:" . date('H:i:s') . " | clientId={$clientId} | role={$role}）";
     $ok = $srv->sendDataChannel($clientId, $reply);
     $srv->_log_std("[onmessage] client={$clientId} send reply ok=" . ($ok ? 'YES' : 'NO') . " reply=\"{$reply}\"\n");
 
     if ($streamId !== '' && isset($rooms[$streamId])) {
-
         $targets = $srv->getClientsInStreamRoom($streamId, [$clientId]);
         if (!empty($targets)) {
             $chatMsg = ($role === 'push' ? '【主播】' : '【观众】')
@@ -277,7 +258,6 @@ $server->onmessage = function (string $message, int $clientId, WebRTCServer $srv
             $srv->_log_std("[onmessage] 房间聊天 streamId={$streamId} targets=" . count($targets) . " sent={$sent} msg=\"{$chatMsg}\"\n");
         }
     } else {
-
         $targets = $srv->getClientsWithDataChannel([$clientId]);
         if (!empty($targets)) {
             $chatMsg = "【{$label}(id{$clientId})】: {$trimMsg}";
@@ -286,5 +266,6 @@ $server->onmessage = function (string $message, int $clientId, WebRTCServer $srv
         }
     }
 };
-$server->isDev = true;
+
+
 $server->start();

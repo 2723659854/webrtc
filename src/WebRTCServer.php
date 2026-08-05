@@ -14,6 +14,21 @@ use Xiaosongshu\Webrtc\Core\WebSocket;
  * @purpose webrtc服务器
  * @author yanglong
  * @time 2026年7月31日10:03:48
+ *
+ * @note webrtc协议栈图
+ * ┌─────────────────────────────────────────────┐
+ * │               WebRTC 协议栈                   │
+ * ├─────────────────┬───────────────────────────┤
+ * │   媒体通道       │   数据通道                 │
+ * │ (音视频流)       │ (DataChannel)             │
+ * ├─────────────────┼───────────────────────────┤
+ * │ SRTP/SRTCP      │ SCTP                      │ ← 传输层
+ * │ (加密RTP)       │ (多流可靠传输)              │
+ * ├─────────────────┴───────────────────────────┤
+ * │              DTLS (加密)                      │ ← 安全层
+ * ├─────────────────────────────────────────────┤
+ * │              ICE + UDP                        │ ← 连接层
+ * └─────────────────────────────────────────────┘
  */
 class WebRTCServer
 {
@@ -32,218 +47,8 @@ class WebRTCServer
      * @var string
      */
     private $playHtmlContent;
+    public $publicIp = '';
 
-
-
-
-    /** 开发模式 */
-    public  $isDev = true;
-    /** ws服务器 */
-    private $wsServer;
-
-    /** udp socket连接 */
-    private $udpSocket;
-
-    /** stun socket连接 */
-    private $stunSocket;
-
-    /**
-     * 客户端连接（public，便于在 onPublisher/onSubscriber/自定义事件里直接读写 PT/SSRC/UDP 地址等底层状态，
-     * 与原 server.php 的"公开 client 状态表"的使用习惯保持一致）。
-     *
-     * 推荐使用 getClientMeta()/setClientMeta() 存业务层字段；
-     * 如需读协议层字段（videoPTs/audioPTs/serverVideoSsrc/serverAudioSsrc/remoteIceUfrag 等）可直接访问此数组。
-     *
-     * @var array<int, array>
-     */
-    public $clients = [];
-
-    /** @var array<string, array{hasIdr:bool, gop:array<int,string>, lastSpsPps:array<int,string>, lastIdrSeq:?int, lastPliSentTs:float, lastKfBurstSids:array<int,float>, lastPeriodicPliTs:float, lastSpsAt:float, lastPpsAt:float, _retryKicks:array<int,array{0:float,1:bool,2:bool,3:bool}>}> */
-    private $_gopCacheByStream = [];
-
-
-    /** udp地址映射表 */
-    private $udpAddrMap = [];
-
-    /** 客户端计数器 */
-    private $clientCounter = 0;
-
-    /** HTTP WHEP 失联资源上次扫描时间 */
-    private $lastHttpPlayCleanupAt = 0.0;
-
-    /** Publisher RR 周期调度时间。 */
-    private $lastPublisherRrAt = 0.0;
-
-    /** 首页index.html内容 */
-    private $indexContent;
-
-    /** 证书路径 */
-    private $certPath;
-
-    /** 秘钥路径 */
-    private $keyPath;
-
-    /** dtls上下文 */
-    private $dtlsContext;
-
-    /** 连接建立事件（WebSocket 升级完成） */
-    public $onOpen = null;
-
-    /**
-     * 用户设置的回调函数，当接受到消息的时候触发
-     * @var callable|null User-registered callback for incoming DataChannel messages.
-     *            Signature: function (string $message, int $clientId, WebRTCServer $server): void
-     *            If null, server echoes the message back to the sender as a demo.
-     */
-    public $onmessage = null;
-
-    /**
-     * 收到 SRTP 解出的明文 RTP 包时触发（可选）。
-     * 不注册则走默认转发逻辑：
-     *   - 若推流端 metadata['role'] === 'push'：自动转发给同 metadata['streamId'] 的所有 play 端（SFU 模式）
-     *   - 否则 echo：按 PT 判断音/视频，重写 SSRC 为服务端 SSRC，再 protect 发回（echo demo 模式）。
-     * 签名：function (int $clientId, string $plainRtp, array $parsedHeader, WebRTCServer $srv): void
-     *   $parsedHeader = [v, pt, seq, ts, ssrc, hdrLen, payloadLen]
-     * @var callable|null
-     */
-    public $onRtp = null;
-
-    /** 连接关闭事件（WebSocket 关闭时） */
-    public $onClose = null;
-
-
-    /**
-     * 任何信令消息到达时先触发（优先级最高）。
-     * 签名：function (int $clientId, array $msg, WebRTCServer $srv, ?bool &$handled): void
-     *   - $msg = json_decode($text, true) 的数组，保证是 array
-     *   - 用户回调内若把 $handled 引用参数设为 true，则服务端跳过默认 handleSignaling
-     *     (offer/candidate/join 等默认处理全部停止)，完全交由用户接管。
-     *   - 若 $handled 保持 null/false，则继续走默认分发（join -> onJoin -> 默认处理，offer/candidate 也一样）。
-     *
-     * 设计意图：用户用这个一个接口就能完全接管信令，无侵入实现任意房间系统。
-     */
-    public $onSignaling = null;
-
-    /**
-     * 客户端发送 {type:"join", role:"push"/"play", streamId:"..."} 时触发。
-     * 签名：function (int $clientId, array $joinMsg, WebRTCServer $srv, ?bool &$handled): void
-     *   - $joinMsg = type + role + streamId 等完整字段
-     *   - 设置 $handled=true 则跳过默认处理（默认会回传 {"type":"joined"} 并存 role/streamId 到 metadata）。
-     */
-    public $onJoin = null;
-
-    /**
-     * 连接被关闭时触发（比 onClose 更语义化，与 onJoin 配对，均在 WebSocket 层面）。
-     * 签名：function (int $clientId, WebRTCServer $srv): void
-     */
-    public $onLeave = null;
-
-    /**
-     * 推流端完成 SDP Answer（服务端给 push 端回完 answer）且 metadata['role']==='push' 时触发，
-     * 表明一个 Publisher 已就绪可接收媒体。
-     * 签名：function (int $clientId, array $context, WebRTCServer $srv): void
-     *   $context = [
-     *       'streamId'  => string,
-     *       'localSsrc' => ['video'=>int, 'audio'=>int],
-     *       'videoPTs'  => [...],
-     *       'audioPTs'  => [...],
-     *   ]
-     */
-    public $onPublisher = null;
-
-    /**
-     * 订阅者 metadata['role']==='play' 完成信令 join（或完成 answer，缺省 SFU 在 join 就触发），
-     * 表示一个 Subscriber 已就绪可接收媒体分发。
-     * 签名：function (int $clientId, array $context, WebRTCServer $srv): void
-     *   $context = ['streamId'=>string, 'pushClientId'=>(?int 当前此流的 push 端)]
-     */
-    public $onSubscriber = null;
-
-    /**
-     * 任意端 Offer 流程走完（接收 offer 并成功 send answer 给该 client 后）触发。
-     * 注意：SFU 下 push 端是 offer 发送者；play 端通常也是 offer 发送者（receive-only）。
-     * 签名：function (int $clientId, string $remoteSdp, string $localSdp, WebRTCServer $srv): void
-     */
-    public $onOffer = null;
-
-    /**
-     * 服务端收到客户端 answer 时触发（当前实现 play 端作为 offeree 时的场景）。
-     * 签名：function (int $clientId, string $answerSdp, WebRTCServer $srv, ?bool &$handled): void
-     */
-    public $onAnswer = null;
-
-    /**
-     * 收到任意端 ICE candidate。
-     * 签名：function (int $clientId, array $candidateMsg, WebRTCServer $srv, ?bool &$handled): void
-     *   - 设 $handled=true 可跳过默认服务端 candidate 存储。
-     */
-    public $onCandidate = null;
-
-    /**
-     * 某客户端首个 SRTP 包成功 unprotect 时触发（ICE+DTLS+SRTP 链路全通，真正有媒体）。
-     * 签名：function (int $clientId, array $firstRtpHeader, WebRTCServer $srv): void
-     *   $firstRtpHeader = [pt, seq, ts, ssrc, payloadLen]
-     */
-    public $onMediaConnected = null;
-
-    public $logFile ;
-
-    /** 持久日志文件句柄（避免每次file_put_contents打开/关闭的开销） */
-    private $logFp = null;
-
-    public $wsPort = 8088;
-
-    public $udpPort = 8089;
-
-    public $stunPort=  3478;
-
-    /** 关键帧定期重注兜底周期（秒）：实时直播 GOP=2s，保守 3s 重注一次防画面卡死 */
-    private $_kfReinjectIntervalSec = 3.0;
-
-    /** @var array<string,bool> _refreshPrimaryFromActualPacket 幂等标记，key="{$streamId}_{$kind}" */
-    private $_primaryRefreshDone = [];
-    /** @var array<string,array{pt:int,ssrc:int}> 推流端最近确认的实际 RTP PT/SSRC，key="{$streamId}_{$kind}" */
-    private $_actualPrimaryByStreamKind = [];
-    /** @var array<string,float> VP8 关键帧 TS 去重，key=streamId，value=RTP timestamp(90kHz) */
-    private $_vp8LastKfTsByStream = [];
-
-    private $_dbgMediaPerf = [];
-
-    /**
-     * 初始化webrtc服务器
-     * @param int $wsPort ws服务端口
-     * @param int $udpPort udp服务端口
-     * @param int $stunPort stun服务端口
-     * @param string $logFile 日志文件路径
-     * @param string $rootDir 静态文件目录
-     */
-    public function __construct(int $wsPort =  8088,int $udpPort =  8089,int $stunPort = 3478 ,string $logFile = "",string $rootDir = "" )
-    {
-        if ($wsPort){
-            $this->wsPort = $wsPort;
-        }
-        if ($udpPort){
-            $this->udpPort = $udpPort;
-        }
-        if ($stunPort){
-            $this->stunPort = $stunPort;
-        }
-        if ($logFile){
-            $this->logFile = $logFile;
-        }else{
-            $this->logFile = __DIR__ . '/server_debug.log';
-        }
-        @file_put_contents($this->logFile, '');
-        /** 静态文件目录 */
-        if(empty($rootDir)){
-            $rootDir = dirname(__DIR__);
-        }
-        $this->docRoot = rtrim(strtr($rootDir, '\\', '/'), '/');
-        /** 生成证书 */
-        $this->generateCertificate();
-        /** 创建dtls上下文 */
-        $this->createDTLSContext();
-    }
 
     /**
      * 处理通过 HTTP 提交的 SDP Offer（用于 WHIP/WHEP 支持）
@@ -251,9 +56,10 @@ class WebRTCServer
      * @param string $streamId
      * @param string $offerSdp
      * @param bool $forceVideoAudioDefault 生成 answer 时是否为 SFU 强制注入 media section
+     * @param bool $preferLoopback 请求是否通过本机回环地址进入
      * @return array ['clientId'=>int, 'sdp'=>string]
      */
-    public function handleHttpOffer(string $role, string $streamId, string $offerSdp, bool $forceVideoAudioDefault = false): array
+    public function handleHttpOffer(string $role, string $streamId, string $offerSdp, bool $forceVideoAudioDefault = false, bool $preferLoopback = false): array
     {
         $clientId = ++$this->clientCounter;
         $now = microtime(true);
@@ -280,6 +86,7 @@ class WebRTCServer
         $opts = [
             'forceVideoAudioDefault' => $forceVideoAudioDefault,
             'whep' => $role === 'play',
+            'preferLoopback' => $preferLoopback,
         ];
         if ($role === 'play' && $streamId !== '' && isset($this->_sfuStreamConfig[$streamId]) && is_array($this->_sfuStreamConfig[$streamId])) {
             $cfg = $this->_sfuStreamConfig[$streamId];
@@ -289,6 +96,7 @@ class WebRTCServer
             $opts['msidStream'] = (string)($cfg['msidStreamId'] ?? '');
             $opts['msidVideoTrack'] = (string)($cfg['msidVideoTrackId'] ?? '');
             $opts['msidAudioTrack'] = (string)($cfg['msidAudioTrackId'] ?? '');
+            $opts['h264ProfileLevelId'] = (string)($cfg['h264ProfileLevelId'] ?? '42e01f');
         }
 
         $answerInfo = $this->generateAnswerSDP($sdp, $remoteIceUfrag, $remoteIcePwd, $remoteSetup, $opts);
@@ -368,7 +176,6 @@ class WebRTCServer
             'audio' => $this->clients[$clientId]['serverAudioSsrc'],
         ];
 
-        // primary PT 选择与重排
         if (!empty($answerInfo['videoPTs']) && is_array($answerInfo['videoPTs'])) {
             $pvSmart = $this->_pickRealPrimaryPT($answerInfo['videoPTs'], 'video');
             if ($pvSmart > 0 && isset($answerInfo['videoPTs'][$pvSmart])) {
@@ -435,6 +242,7 @@ class WebRTCServer
                 'audioPTs' => $audioPTs,
                 'primaryVideoPT' => $primaryVideoPT,
                 'primaryAudioPT' => $primaryAudioPT,
+                'h264ProfileLevelId' => '42e01f',
                 'serverVideoSsrc' => $serverVideoSsrc,
                 'serverAudioSsrc' => $serverAudioSsrc,
                 'cname' => $cname,
@@ -475,8 +283,34 @@ class WebRTCServer
         if ($role === 'play') {
             $this->_log_std("[handleHttpOffer] WHEP 订阅者已注册 clientId={$clientId} streamId={$streamId}\n");
         }
+
         return ['clientId' => $clientId, 'sdp' => $localSdp];
     }
+
+    /** 开发模式 */
+    public  $isDev = true;
+    /** ws服务器 */
+    private $wsServer;
+
+    /** udp socket连接 */
+    private $udpSocket;
+
+    /** stun socket连接 */
+    private $stunSocket;
+
+    /**
+     * 客户端连接（public，便于在 onPublisher/onSubscriber/自定义事件里直接读写 PT/SSRC/UDP 地址等底层状态，
+     * 与原 server.php 的"公开 client 状态表"的使用习惯保持一致）。
+     *
+     * 推荐使用 getClientMeta()/setClientMeta() 存业务层字段；
+     * 如需读协议层字段（videoPTs/audioPTs/serverVideoSsrc/serverAudioSsrc/remoteIceUfrag 等）可直接访问此数组。
+     *
+     * @var array<int, array>
+     */
+    public $clients = [];
+
+    /** @var array<string, array{hasIdr:bool, gop:array<int,string>, lastSpsPps:array<int,string>, lastIdrSeq:?int, lastPliSentTs:float, lastKfBurstSids:array<int,float>, lastPeriodicPliTs:float, lastSpsAt:float, lastPpsAt:float, _retryKicks:array<int,array{0:float,1:bool,2:bool,3:bool}>}> */
+    private $_gopCacheByStream = [];
 
     /** @var array<string, array{
      *   createdAt:float,
@@ -506,6 +340,7 @@ class WebRTCServer
             ? ['h264','avc','vp8','vp9','h265','hevc','av1','h263','mpeg4','mp4v','theora']
             : ['opus','pcmu','pcma','g722','isac','ilbc','speex','gsm','l16','aac','ac3','eac3','mpa','g726'];
         $knownBad = ['red','rtx','ulpfec','flexfec','fec','x-ulpfec','x-red','rtx-red','telephone-event','cn'];
+
         $videoPreferred = ['h264','avc'];
         $audioPreferred = ['opus'];
         $firstPreferred = 0;
@@ -518,15 +353,18 @@ class WebRTCServer
                 $rm = explode('/', trim($info['rtpmap']));
                 $c = strtolower(trim($rm[0] ?? ''));
             }
+
             if ($c !== '' && in_array($c, $knownBad, true)) continue;
             if ($kind === 'video' && $c !== '' && in_array($c, $videoPreferred, true)) return $pt;
             if ($kind === 'audio' && $c !== '' && in_array($c, $audioPreferred, true)) return $pt;
+
             if ($firstPreferred <= 0) {
                 if ($kind === 'video' && $c !== '' && in_array($c, $videoPreferred, true)) $firstPreferred = $pt;
                 if ($kind === 'audio' && $c !== '' && in_array($c, $audioPreferred, true)) $firstPreferred = $pt;
             }
         }
         if ($firstPreferred > 0) return $firstPreferred;
+
         return 0;
     }
 
@@ -672,7 +510,6 @@ class WebRTCServer
                         . "] sfuCfg[" . ($_patchedSfuCfg?'YES':'no')
                         . "]，保留已协商subscriber target PT，detectedCodec={$_detectedCodec}\n");
         $this->_primaryRefreshDone[$k] = true;
-
         if ($kind === 'video') {
             $this->clients[$publisherId]['primaryVideoPT'] = $actualPT;
             $this->clients[$publisherId]['videoPTs'] = $this->_reorderPTsForSubscriber($ptList, $actualPT);
@@ -754,7 +591,6 @@ class WebRTCServer
         }
         $gc = $this->_gopCacheByStream[$streamId];
         $now = microtime(true);
-
         if (!isset($gc['_retryKicks']) || !is_array($gc['_retryKicks'])) {
             $gc['_retryKicks'] = [];
             $this->_gopCacheByStream[$streamId] = $gc;
@@ -791,7 +627,6 @@ class WebRTCServer
                 $this->_gopCacheByStream[$streamId] = $gc;
             }
         }
-
         if (!empty($toRemove)) {
             $gc = $this->_gopCacheByStream[$streamId];
             foreach ($toRemove as $sid2) {
@@ -803,7 +638,17 @@ class WebRTCServer
         }
     }
 
+    /** 关键帧定期重注兜底周期（秒）：实时直播 GOP=2s，保守 3s 重注一次防画面卡死 */
+    private $_kfReinjectIntervalSec = 3.0;
 
+    /** @var array<string,bool> _refreshPrimaryFromActualPacket 幂等标记，key="{$streamId}_{$kind}" */
+    private $_primaryRefreshDone = [];
+    /** @var array<string,array{pt:int,ssrc:int}> 推流端最近确认的实际 RTP PT/SSRC，key="{$streamId}_{$kind}" */
+    private $_actualPrimaryByStreamKind = [];
+    /** @var array<string,float> VP8 关键帧 TS 去重，key=streamId，value=RTP timestamp(90kHz) */
+    private $_vp8LastKfTsByStream = [];
+
+    private $_dbgMediaPerf = [];
 
     private function _dbgHttpPost(string $payload, string $sessionId = 'whep-zero-video'): ?bool
     {
@@ -898,7 +743,6 @@ class WebRTCServer
         unset($subscriber);
     }
 
-
     private function _dbgPerfBurstEvent(string $streamId, string $type): void
     {
         if (!isset($this->_dbgMediaPerf['bursts'][$streamId])) $this->_dbgMediaPerf['bursts'][$streamId] = ['streamId'=>$streamId,'idrCount'=>0,'pliCount'=>0,'gopBurstCount'=>0];
@@ -920,6 +764,18 @@ class WebRTCServer
         $loop['tickCount']++;
         $loop['gapSumUs'] += $gapUs;
         if ($gapUs > $loop['gapMaxUs']) $loop['gapMaxUs'] = $gapUs;
+
+        if ($gapUs >= 250000) {
+            $pushClients = [];
+            foreach ($this->clients as $clientId => $client) {
+                if (($client['meta']['role'] ?? '') === 'push') $pushClients[] = (int)$clientId;
+            }
+            if ($pushClients) {
+                $this->_log_std("[DEBUG event loop stall] gapMs=" . number_format($gapUs / 1000, 1, '.', '')
+                    . " pushClients=" . implode(',', $pushClients) . "\n");
+            }
+        }
+
         unset($loop);
 
         if (($now - (float)$this->_dbgMediaPerf['lastReportAt']) < 1.0) return;
@@ -966,8 +822,175 @@ class WebRTCServer
         }
     }
 
+    /** udp地址映射表 */
+    private $udpAddrMap = [];
 
+    /** 客户端计数器 */
+    private $clientCounter = 0;
 
+    /** HTTP WHEP 失联资源上次扫描时间 */
+    private $lastHttpPlayCleanupAt = 0.0;
+
+    /** Publisher RR 周期调度时间。 */
+    private $lastPublisherRrAt = 0.0;
+
+    /** 首页index.html内容 */
+    private $indexContent;
+
+    /** 证书路径 */
+    private $certPath;
+
+    /** 秘钥路径 */
+    private $keyPath;
+
+    /** dtls上下文 */
+    private $dtlsContext;
+
+    /** 连接建立事件（WebSocket 升级完成） */
+    public $onOpen = null;
+
+    /**
+     * 用户设置的回调函数，当接受到消息的时候触发
+     * @var callable|null User-registered callback for incoming DataChannel messages.
+     *            Signature: function (string $message, int $clientId, WebRTCServer $server): void
+     *            If null, server echoes the message back to the sender as a demo.
+     */
+    public $onmessage = null;
+
+    /**
+     * 收到 SRTP 解出的明文 RTP 包时触发（可选）。
+     * 不注册则走默认转发逻辑：
+     *   - 若推流端 metadata['role'] === 'push'：自动转发给同 metadata['streamId'] 的所有 play 端（SFU 模式）
+     *   - 否则 echo：按 PT 判断音/视频，重写 SSRC 为服务端 SSRC，再 protect 发回（echo demo 模式）。
+     * 签名：function (int $clientId, string $plainRtp, array $parsedHeader, WebRTCServer $srv): void
+     *   $parsedHeader = [v, pt, seq, ts, ssrc, hdrLen, payloadLen]
+     * @var callable|null
+     */
+    public $onRtp = null;
+
+    /** 连接关闭事件（WebSocket 关闭时） */
+    public $onClose = null;
+
+    /**
+     * 任何信令消息到达时先触发（优先级最高）。
+     * 签名：function (int $clientId, array $msg, WebRTCServer $srv, ?bool &$handled): void
+     *   - $msg = json_decode($text, true) 的数组，保证是 array
+     *   - 用户回调内若把 $handled 引用参数设为 true，则服务端跳过默认 handleSignaling
+     *     (offer/candidate/join 等默认处理全部停止)，完全交由用户接管。
+     *   - 若 $handled 保持 null/false，则继续走默认分发（join -> onJoin -> 默认处理，offer/candidate 也一样）。
+     *
+     * 设计意图：用户用这个一个接口就能完全接管信令，无侵入实现任意房间系统。
+     */
+    public $onSignaling = null;
+
+    /**
+     * 客户端发送 {type:"join", role:"push"/"play", streamId:"..."} 时触发。
+     * 签名：function (int $clientId, array $joinMsg, WebRTCServer $srv, ?bool &$handled): void
+     *   - $joinMsg = type + role + streamId 等完整字段
+     *   - 设置 $handled=true 则跳过默认处理（默认会回传 {"type":"joined"} 并存 role/streamId 到 metadata）。
+     */
+    public $onJoin = null;
+
+    /**
+     * 连接被关闭时触发（比 onClose 更语义化，与 onJoin 配对，均在 WebSocket 层面）。
+     * 签名：function (int $clientId, WebRTCServer $srv): void
+     */
+    public $onLeave = null;
+
+    /**
+     * 推流端完成 SDP Answer（服务端给 push 端回完 answer）且 metadata['role']==='push' 时触发，
+     * 表明一个 Publisher 已就绪可接收媒体。
+     * 签名：function (int $clientId, array $context, WebRTCServer $srv): void
+     *   $context = [
+     *       'streamId'  => string,
+     *       'localSsrc' => ['video'=>int, 'audio'=>int],
+     *       'videoPTs'  => [...],
+     *       'audioPTs'  => [...],
+     *   ]
+     */
+    public $onPublisher = null;
+
+    /**
+     * 订阅者 metadata['role']==='play' 完成信令 join（或完成 answer，缺省 SFU 在 join 就触发），
+     * 表示一个 Subscriber 已就绪可接收媒体分发。
+     * 签名：function (int $clientId, array $context, WebRTCServer $srv): void
+     *   $context = ['streamId'=>string, 'pushClientId'=>(?int 当前此流的 push 端)]
+     */
+    public $onSubscriber = null;
+
+    /**
+     * 任意端 Offer 流程走完（接收 offer 并成功 send answer 给该 client 后）触发。
+     * 注意：SFU 下 push 端是 offer 发送者；play 端通常也是 offer 发送者（receive-only）。
+     * 签名：function (int $clientId, string $remoteSdp, string $localSdp, WebRTCServer $srv): void
+     */
+    public $onOffer = null;
+
+    /**
+     * 服务端收到客户端 answer 时触发（当前实现 play 端作为 offeree 时的场景）。
+     * 签名：function (int $clientId, string $answerSdp, WebRTCServer $srv, ?bool &$handled): void
+     */
+    public $onAnswer = null;
+
+    /**
+     * 收到任意端 ICE candidate。
+     * 签名：function (int $clientId, array $candidateMsg, WebRTCServer $srv, ?bool &$handled): void
+     *   - 设 $handled=true 可跳过默认服务端 candidate 存储。
+     */
+    public $onCandidate = null;
+
+    /**
+     * 某客户端首个 SRTP 包成功 unprotect 时触发（ICE+DTLS+SRTP 链路全通，真正有媒体）。
+     * 签名：function (int $clientId, array $firstRtpHeader, WebRTCServer $srv): void
+     *   $firstRtpHeader = [pt, seq, ts, ssrc, payloadLen]
+     */
+    public $onMediaConnected = null;
+
+    public $logFile ;
+
+    /** 持久日志文件句柄（避免每次file_put_contents打开/关闭的开销） */
+    private $logFp = null;
+
+    public $wsPort = 8088;
+
+    public $udpPort = 8089;
+
+    public $stunPort=  3478;
+
+    /**
+     * 初始化webrtc服务器
+     * @param int $wsPort ws服务端口
+     * @param int $udpPort udp服务端口
+     * @param int $stunPort stun服务端口
+     * @param string $logFile 日志文件路径
+     * @param string $rootDir 静态文件目录
+     */
+    public function __construct(int $wsPort =  8088,int $udpPort =  8089,int $stunPort = 3478 ,string $logFile = "",string $rootDir = "" )
+    {
+        if ($wsPort){
+            $this->wsPort = $wsPort;
+        }
+        if ($udpPort){
+            $this->udpPort = $udpPort;
+        }
+        if ($stunPort){
+            $this->stunPort = $stunPort;
+        }
+        if ($logFile){
+            $this->logFile = $logFile;
+        }else{
+            $this->logFile = __DIR__ . '/server_debug.log';
+        }
+        @file_put_contents($this->logFile, '');
+        /** 静态文件目录 */
+        if(empty($rootDir)){
+            $rootDir = dirname(__DIR__);
+        }
+        $this->docRoot = rtrim(strtr($rootDir, '\\', '/'), '/');
+        /** 生成证书 */
+        $this->generateCertificate();
+        /** 创建dtls上下文 */
+        $this->createDTLSContext();
+    }
 
     /**
      * 日志类
@@ -1025,6 +1048,7 @@ class WebRTCServer
         $msg = json_decode($message, true);
         if (!is_array($msg)) return;
         $clientId = (int)$clientId;
+
         if (isset($this->onSignaling) && is_callable($this->onSignaling)) {
             $handled = null;
             try {
@@ -1071,7 +1095,6 @@ class WebRTCServer
             case 'offer':
                 $this->handleOffer($clientId, $msg);
                 break;
-
             case 'answer': {
                 $ansHandled = null;
                 $sdp = (string)($msg['sdp'] ?? '');
@@ -1086,6 +1109,7 @@ class WebRTCServer
                 if ($ansHandled !== true) {
                     if ($sdp !== '') {
                         $this->clients[$clientId]['remoteAnswerSdp'] = $sdp;
+
                         $ufrag = $this->extractSdpAttribute($sdp, 'ice-ufrag');
                         $pwd   = $this->extractSdpAttribute($sdp, 'ice-pwd');
                         $setup = $this->extractSdpAttribute($sdp, 'setup');
@@ -1095,7 +1119,6 @@ class WebRTCServer
                             $this->clients[$clientId]['remoteIcePwdForSTUN']  = $pwd;
                         }
                         if ($setup !== '') $this->clients[$clientId]['remoteSetup']    = $setup;
-
                         $role4 = (string)$this->getClientMeta($clientId, 'role', '');
                         if ($role4 === 'play' || $role4 === 'subscriber') {
                             $sid4 = (string)$this->getClientMeta($clientId, 'streamId', '');
@@ -1256,7 +1279,6 @@ class WebRTCServer
         return $ok;
     }
 
-
     /**
      * 返回所有 SCTP 已 ESTABLISHED (DataChannel 可用) 的客户端 clientId 列表。
      * 可用于：多客户端全局聊天 / 系统通知推送 / 在线列表刷新等。
@@ -1374,7 +1396,6 @@ class WebRTCServer
         $cc     = $b0 & 0xF;
         $xBit   = ($b0 >> 4) & 0x1;
         $hdrLen = 12 + 4 * $cc;
-
         if ($xBit && strlen($plainRtp) >= $hdrLen + 4) {
             $_extLen = unpack('n', substr($plainRtp, $hdrLen + 2, 2))[1];
             $hdrLen += 4 + 4 * $_extLen;
@@ -1406,6 +1427,7 @@ class WebRTCServer
             }
         } catch (\Throwable $_dbgPaddingError) {
         }
+
         if ($_dbgPBit === 1 && $_dbgPaddingValid === true && $_dbgEffectivePayloadLen === 0) {
             return 0;
         }
@@ -1459,7 +1481,6 @@ class WebRTCServer
 
         if ($kind === 'unknown' && $payloadLen > 0) {
             $_p0 = ord($plainRtp[$hdrLen] ?? "\x00");
-
             $_t = $_p0 & 0x1F;
             $_looksH264 = in_array($_t, [1,2,3,4,5,6,7,8,9,10,11,12,24,25,26,27,28,29,30,31], true);
             $_vp8X = (($_p0 >> 7) & 1);
@@ -1528,6 +1549,7 @@ class WebRTCServer
             }
         }
         $_matchMode = 'strict-only';
+
         if ($excludeClientId >= 0 && $kind === 'video') {
             $this->_ensurePeriodicKeyFrame($streamId);
         }
@@ -1536,7 +1558,9 @@ class WebRTCServer
         if ($kind === 'video' && $payloadLen > 0) {
             $payload = substr($plainRtp, $hdrLen, $payloadLen);
             if ($codecName === 'h264') {
+
                 $fNriType = ord($payload[0]) & 0x1F;
+
                 if (empty($this->_sfuStreamConfig[$streamId]['_dbgActualProfileLevelId'])) {
                     $_dbgSpsProfileBytes = null;
                     $_dbgSpsSource = '';
@@ -1566,6 +1590,21 @@ class WebRTCServer
                     if (is_string($_dbgSpsProfileBytes) && strlen($_dbgSpsProfileBytes) === 3 && isset($this->_sfuStreamConfig[$streamId])) {
                         $_dbgActualProfileLevelId = strtolower(bin2hex($_dbgSpsProfileBytes));
                         $this->_sfuStreamConfig[$streamId]['_dbgActualProfileLevelId'] = $_dbgActualProfileLevelId;
+                        $this->_sfuStreamConfig[$streamId]['h264ProfileLevelId'] = $_dbgActualProfileLevelId;
+                        foreach ($this->_sfuStreamConfig[$streamId]['videoPTs'] as &$_profilePtInfo) {
+                            if (!is_array($_profilePtInfo)) continue;
+                            $_profileCodec = strtolower((string)($_profilePtInfo['codec'] ?? ''));
+                            if ($_profileCodec !== 'h264' && $_profileCodec !== 'avc') continue;
+                            $_profileFmtp = (string)($_profilePtInfo['fmtp'] ?? '');
+                            if (preg_match('/profile-level-id=[0-9a-fA-F]{6}/i', $_profileFmtp)) {
+                                $_profileFmtp = preg_replace('/profile-level-id=[0-9a-fA-F]{6}/i', 'profile-level-id=' . $_dbgActualProfileLevelId, $_profileFmtp);
+                            } else {
+                                $_profileFmtp = rtrim($_profileFmtp, ';') . ';profile-level-id=' . $_dbgActualProfileLevelId;
+                            }
+                            $_profilePtInfo['fmtp'] = ltrim($_profileFmtp, ';');
+                        }
+                        unset($_profilePtInfo);
+                        $this->_log_std("[H264 profile detected] streamId={$streamId} profile-level-id={$_dbgActualProfileLevelId} source={$_dbgSpsSource}\n");
                         $_dbgPubOfferH264 = (array)($this->clients[$excludeClientId]['_dbgOfferH264'] ?? []);
                         $_dbgCfgH264 = [];
                         foreach ((array)($this->_sfuStreamConfig[$streamId]['videoPTs'] ?? []) as $_dbgCfgPt => $_dbgCfgPtInfo) {
@@ -1589,6 +1628,7 @@ class WebRTCServer
                 $_isFuAIdrFragment = false;
                 $_dbgType = $fNriType;
                 $_dbgFuBits = '';
+
                 $fubMtapFix = false;
                 if ($fNriType === 29) {
                     if ($payloadLen >= 4) {
@@ -1639,6 +1679,7 @@ class WebRTCServer
                         }
                     }
                 } elseif ($fNriType === 24) {
+
                     $p = 1;
                     $_stapFb = false;
                     $_dbgNals = [];
@@ -1663,6 +1704,7 @@ class WebRTCServer
                 } elseif ($fNriType === 5) {
                     $hasIdrNal = true;
                 }
+
                 if (!$hasIdrNal && $_isFuAIdrFragment && $hMarker && $payloadLen >= 500) {
                     $gcTmp = $this->_gopCacheByStream[$streamId] ?? null;
                     if ($gcTmp && empty($gcTmp['hasIdr']) && !empty($gcTmp['lastSpsAt']) && !empty($gcTmp['lastPpsAt'])) {
@@ -1901,35 +1943,9 @@ class WebRTCServer
                             $gc['gopCacheClosed'] = true;
                             $this->_log_std("[GOP hard limit] streamId={$streamId} removed incomplete timestamp={$_incompleteTs}; cached=" . count($gc['gop']) . "\n");
                         }
-                    } else {
-                        static $_dbgGopLimitReported = [];
-                        if (empty($_dbgGopLimitReported[$streamId])) {
-                            $_dbgGopLimitReported[$streamId] = true;
-                            $_dbgDescribeRtpK = static function (string $_dbgPacketK): array {
-                                $_dbgB0K = ord($_dbgPacketK[0]);
-                                $_dbgHdrK = 12 + 4 * ($_dbgB0K & 0x0F);
-                                if (($_dbgB0K & 0x10) !== 0 && strlen($_dbgPacketK) >= $_dbgHdrK + 4) $_dbgHdrK += 4 + 4 * unpack('n', substr($_dbgPacketK, $_dbgHdrK + 2, 2))[1];
-                                $_dbgPayloadLenK = max(0, strlen($_dbgPacketK) - $_dbgHdrK);
-                                $_dbgNalK = $_dbgPayloadLenK > 0 ? (ord($_dbgPacketK[$_dbgHdrK]) & 0x1F) : null;
-                                $_dbgFuStartK = null; $_dbgFuEndK = null; $_dbgFuTypeK = null;
-                                if ($_dbgNalK === 28 && $_dbgPayloadLenK >= 2) {
-                                    $_dbgFuHeaderK = ord($_dbgPacketK[$_dbgHdrK + 1]);
-                                    $_dbgFuTypeK = $_dbgFuHeaderK & 0x1F;
-                                    $_dbgFuStartK = (($_dbgFuHeaderK >> 7) & 1) === 1;
-                                    $_dbgFuEndK = (($_dbgFuHeaderK >> 6) & 1) === 1;
-                                }
-                                return ['seq'=>unpack('n', substr($_dbgPacketK, 2, 2))[1],'timestamp'=>unpack('N', substr($_dbgPacketK, 4, 4))[1],'marker'=>(ord($_dbgPacketK[1]) >> 7) & 1,'nalType'=>$_dbgNalK,'fuType'=>$_dbgFuTypeK,'fuStart'=>$_dbgFuStartK,'fuEnd'=>$_dbgFuEndK];
-                            };
-                            $_dbgLastCachedK = $_dbgDescribeRtpK($gc['gop'][count($gc['gop']) - 1]);
-                            $_dbgRejectedK = $_dbgDescribeRtpK($plainRtp);
-                            $_dbgPayloadK = json_encode(['sessionId'=>'whep-zero-video','runId'=>'post-padding-k-l-m','hypothesisId'=>'K','location'=>'src/WebRTCServer.php:gop-limit-first-reject','msg'=>'[DEBUG] GOP 60 packet first rejection boundary','data'=>['streamId'=>$streamId,'gopCount'=>count($gc['gop']),'lastCached'=>$_dbgLastCachedK,'firstRejected'=>$_dbgRejectedK,'sameTimestamp'=>$_dbgLastCachedK['timestamp'] === $_dbgRejectedK['timestamp']],'ts'=>(int)(microtime(true)*1000)]);
-                            $this->_dbgHttpPost($_dbgPayloadK);
-                        }
-                        // #endregion
                     }
                 }
             } elseif ($kind === 'audio' && $gc['hasIdr']) {
-
             }
 
             $_nowF2 = microtime(true);
@@ -1941,7 +1957,7 @@ class WebRTCServer
                     if (($_nowF2 - (float)$gc['_noIdrSince']) > 2.5) {
                         $lastPli = (float)($gc['lastPliSentTs'] ?? 0.0);
                         if (($_nowF2 - $lastPli) >= 0.5) {
-                            $this->_log_std("[SFU  GOP EMPTY IDR] streamId={$streamId} no-IDR " . number_format($_nowF2 - (float)$gc['_noIdrSince'], 1) . "s hasReadySub → PLI publisherId={$excludeClientId}\n");
+                            $this->_log_std("[SFU GOP EMPTY IDR] streamId={$streamId} no-IDR " . number_format($_nowF2 - (float)$gc['_noIdrSince'], 1) . "s hasReadySub → PLI publisherId={$excludeClientId}\n");
                             @$this->sendPliToPublisher($streamId, false);
                         }
                     }
@@ -2038,7 +2054,6 @@ class WebRTCServer
             $_zeroSubDiag[$streamId]['count'] = 0;
         }
 
-
         if ($kind === 'video') {
             static $_vidDiag = [];
             if (!isset($_vidDiag[$streamId])) $_vidDiag[$streamId] = ['cnt'=>0, 'lastT'=>0.0, 'lastNsubs'=>0, 'lastSsrcOut'=>0, 'lastPtOut'=>0];
@@ -2064,6 +2079,7 @@ class WebRTCServer
 
         return $n;
     }
+
 
     /**
      * 把订阅者发来的 RTCP feedback（PLI/FIR/NACK等）relay 给 streamId 对应的 push 端（publisher）。
@@ -2165,7 +2181,6 @@ class WebRTCServer
         if ($pubSsrc <= 0) return false;
 
         $sfuSsrc = 0x53465500;
-
         $pli = pack('CCnNN',
             (2 << 6) | 1,
             206,
@@ -2216,9 +2231,7 @@ class WebRTCServer
             || empty($gc['hasIdr'])
             || empty($gc['gop'])) return 0;
         $n = 0;
-
         $this->_log_std("[burst DIAG] streamId={$streamId} sub={$subscriberId} hasIdr=" . ($gc['hasIdr']?'YES':'NO') . " gopCount=" . count($gc['gop']) . " lastSpsPpsKeys=" . json_encode(array_keys(isset($gc['lastSpsPps']) && is_array($gc['lastSpsPps']) ? $gc['lastSpsPps'] : [])) . "\n");
-
         $_diagNals = [];
         foreach ($gc['gop'] as $_idx => $_rtpF) {
             if ($_idx >= 5) break;
@@ -2343,6 +2356,9 @@ class WebRTCServer
      */
     public function getLocalIP()
     {
+        $publicIp = trim((string)$this->publicIp);
+        if ($publicIp !== '') return $publicIp;
+
         $ip = '127.0.0.1';
         foreach (gethostbynamel(gethostname()) as $addr) {
             if (filter_var($addr, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && $addr !== '127.0.0.1') {
@@ -2350,6 +2366,7 @@ class WebRTCServer
                 break;
             }
         }
+
         return $ip;
     }
 
@@ -2361,7 +2378,6 @@ class WebRTCServer
      * @param int $sid 流id
      * @return bool
      */
-
     public function sendDataChannel(int $clientId,string $message,int $ppid = 51,int $sid = 0)
     {
         if (!isset($this->clients[$clientId]['sctp']) || $this->clients[$clientId]['sctp']['state'] !== 'ESTABLISHED') {
@@ -2455,6 +2471,7 @@ class WebRTCServer
             'msidStream'       => $_streamUuid,
             'msidVideoTrack'   => $_videoTrackUuid,
             'msidAudioTrack'   => $_audioTrackUuid,
+            'h264ProfileLevelId' => (string)($cfg['h264ProfileLevelId'] ?? '42e01f'),
         ]);
         $templateSdp = (string)($answerInfo['sdp'] ?? '');
         $localUfrag  = (string)($answerInfo['ice-ufrag'] ?? '');
@@ -2488,6 +2505,7 @@ class WebRTCServer
         if (is_array($_pubForFix)) {
             $_pvPub = (int)($_pubForFix['primaryVideoPT'] ?? 0);
             $_paPub = (int)($_pubForFix['primaryAudioPT'] ?? 0);
+
             $_getPtInfo = function (int $pt, string $kind, array $pClone): ?array {
                 $ptMap = $kind === 'video'
                     ? (is_array($pClone['videoPTs'] ?? null) ? $pClone['videoPTs'] : [])
@@ -2545,6 +2563,7 @@ class WebRTCServer
                                 . " aPTs=" . json_encode(array_keys($this->clients[$subscriberId]['audioPTs'])) . "\n");
             }
         }
+
         $_needRewriteSdpMline = true;
         $_newVorderForRewrite = array_values(array_map('intval',
             array_keys(is_array($this->clients[$subscriberId]['videoPTs']) ? $this->clients[$subscriberId]['videoPTs'] : [])));
@@ -2556,7 +2575,6 @@ class WebRTCServer
                         . " aPTs=" . json_encode(array_keys($this->clients[$subscriberId]['audioPTs'])) . "\n");
 
         $offerSdp = $templateSdp;
-
         $offerSdp = preg_replace_callback(
             '/^a=(sendonly|recvonly|sendrecv|inactive)(\r?)(\n|$)/m',
             static function (array $m): string {
@@ -2570,7 +2588,6 @@ class WebRTCServer
             $offerSdp
         );
         if (!is_string($offerSdp)) $offerSdp = $templateSdp;
-
         $offerSdp = preg_replace('/a=setup:[^\r\n]*/', 'a=setup:' . $setup, $offerSdp, 1);
         if (!is_string($offerSdp)) $offerSdp = $templateSdp;
 
@@ -2603,6 +2620,7 @@ class WebRTCServer
     {
         if (!isset($this->clients[$id])) return;
         $id = (int)$id;
+
         $_snap = $this->clients[$id];
         $_role     = (string)($_snap['meta']['role'] ?? '?');
         $_streamId = (string)($_snap['meta']['streamId'] ?? '');
@@ -2743,6 +2761,7 @@ class WebRTCServer
             $this->clients[$id]['remoteIcePwd'] = '';
             $this->clients[$id]['remoteOfferSdp'] = '';
             $this->clients[$id]['remoteAnswerSdp'] = '';
+
             $this->clients[$id]['meta'] = [];
             $this->clients[$id]['dtlsState'] = 'closed';
             $this->clients[$id]['dtls'] = null;
@@ -2802,6 +2821,7 @@ class WebRTCServer
             $sent = 0;
             $failed = 0;
             $obsRr = is_array($client['_obsRrAggregate'] ?? null) ? $client['_obsRrAggregate'] : ['lastReportAt'=>$now,'rrCount'=>0,'sent'=>0,'failed'=>0,'ssrcs'=>[]];
+
             foreach ($client['_publisherRtpRx'] as $sourceSsrc => $rx) {
                 $extendedMax = (int)$rx['cycles'] + (int)$rx['maxSeq'];
                 $expected = $extendedMax - (int)$rx['baseSeq'] + 1;
@@ -2826,6 +2846,7 @@ class WebRTCServer
                     . pack('NNNN', $extendedMax & 0xFFFFFFFF, (int)round((float)$rx['jitter']) & 0xFFFFFFFF, $lsr & 0xFFFFFFFF, $dlsr & 0xFFFFFFFF);
                 $rrOk = $this->protectAndSendRtcp((int)$clientId, $rr);
                 if ($rrOk) $sent++; else $failed++;
+
                 $kind = 'unknown';
                 $incomingByKind = is_array($client['incomingSsrcByKind'] ?? null) ? $client['incomingSsrcByKind'] : [];
                 if ((int)($incomingByKind['video'] ?? 0) === (int)$sourceSsrc) $kind = 'video';
@@ -2841,6 +2862,7 @@ class WebRTCServer
                 }
                 $obsRr['rrCount']++; $obsRr[$rrOk ? 'sent' : 'failed']++;
                 $obsRr['ssrcs'][(string)$sourceSsrc] = ['ssrc'=>(int)$sourceSsrc,'kind'=>$kind,'extendedMax'=>$extendedMax,'expected'=>$expected,'received'=>$received,'lost'=>$lost,'fractionLost'=>$fractionLost,'jitter'=>(int)round((float)$rx['jitter']),'lsr'=>$lsr,'dlsr'=>$dlsr];
+
             }
 
             $log = is_array($client['_publisherRrLog'] ?? null) ? $client['_publisherRrLog'] : ['sent'=>0, 'failed'=>0, 'lastAt'=>$now];
@@ -2897,27 +2919,14 @@ class WebRTCServer
      */
     private function runEventLoop()
     {
-
         $_dbgObsReport = static function (string $hypothesisId, string $location, string $msg, array $data): void {
-            static $_dbgUrl = null, $_dbgFailures = 0, $_dbgOpenUntil = 0.0;
-            $_dbgNow = microtime(true);
-            if ($_dbgOpenUntil > $_dbgNow) return;
-            if ($_dbgUrl === null) {
-                $_dbgEnv = @file_get_contents(__DIR__ . '/../.dbg/obs-whip-handshake.env');
-                preg_match('/^DEBUG_SERVER_URL=(.+)$/m', (string)$_dbgEnv, $_dbgMatch);
-                $_dbgUrl = trim($_dbgMatch[1] ?? 'http://127.0.0.1:7777/event');
-            }
-            $_dbgPayload = json_encode(['sessionId'=>'obs-whip-handshake','runId'=>'pre-fix','hypothesisId'=>$hypothesisId,'location'=>$location,'msg'=>'[DEBUG] ' . $msg,'data'=>$data,'ts'=>(int)($_dbgNow*1000)]);
-            $_dbgResult = @file_get_contents($_dbgUrl, false, stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/json\r\nConnection: close\r\n",'content'=>$_dbgPayload,'timeout'=>0.005,'ignore_errors'=>true]]));
-            if ($_dbgResult !== false) { $_dbgFailures = 0; $_dbgOpenUntil = 0.0; return; }
-            $_dbgFailures++;
-            if ($_dbgFailures >= 2) { $_dbgFailures = 0; $_dbgOpenUntil = $_dbgNow + 30.0; }
         };
 
-
         while (true) {
+
             $this->_dbgPerfLoopIteration(microtime(true));
             $readStreams = [$this->wsServer];
+
             if ($this->udpSocket && is_resource($this->udpSocket)) {
                 $readStreams[] = $this->udpSocket;
             }
@@ -2956,7 +2965,9 @@ class WebRTCServer
                         '_dbgObsHeaderReported' => false,
                         '_dbgObsPostWaitReported' => false,
                     ];
+
                     $_dbgObsReport('E', 'src/WebRTCServer.php:http-accept', 'HTTP client accepted', ['clientId'=>$clientId,'acceptedAtMs'=>(int)($this->clients[$clientId]['_dbgObsAcceptedAt']*1000)]);
+
                     $_total = count($this->clients);
                     $this->_log_std("New client {$clientId} connected (当前总连接数={$_total})\n");
                     if (isset($this->onOpen) && is_callable($this->onOpen)) {
@@ -2976,10 +2987,12 @@ class WebRTCServer
                 if ($client['socket'] && in_array($client['socket'], $readStreams, true)) {
                     $chunk = @fread($client['socket'], 65536);
                     if ($chunk === '' || $chunk === false) {
+
                         $_dbgCloseBuffer = (string)($this->clients[$id]['buffer'] ?? '');
                         $_dbgCloseRequestLine = '';
                         if (preg_match('/^([^\r\n]+)/', $_dbgCloseBuffer, $_dbgCloseLineMatch)) $_dbgCloseRequestLine = $_dbgCloseLineMatch[1];
                         $_dbgObsReport('A,E', 'src/WebRTCServer.php:http-empty-read-close', 'HTTP fread empty before removeClient', ['clientId'=>(int)$id,'durationMs'=>(int)((microtime(true)-(float)($this->clients[$id]['_dbgObsAcceptedAt'] ?? microtime(true)))*1000),'state'=>(string)($this->clients[$id]['state'] ?? ''),'bufferLen'=>strlen($_dbgCloseBuffer),'hasHeaderTerminator'=>strpos($_dbgCloseBuffer, "\r\n\r\n") !== false,'requestLine'=>$_dbgCloseRequestLine]);
+
                         if (isset($this->onClose) && is_callable($this->onClose)) {
                             try {
                                 $_cb = $this->onClose;
@@ -3005,8 +3018,10 @@ class WebRTCServer
 
                     if ($this->clients[$id]['state'] === 'http') {
                         if (strpos($this->clients[$id]['buffer'], "\r\n\r\n") === false) continue;
+
                         $parsed = $this->parseHttpHeaders($this->clients[$id]['buffer']);
                         $headers = $parsed['headers'];
+
                         if (empty($this->clients[$id]['_dbgObsHeaderReported'])) {
                             $this->clients[$id]['_dbgObsHeaderReported'] = true;
                             $_dbgHeaderEnd = strpos($this->clients[$id]['buffer'], "\r\n\r\n");
@@ -3044,8 +3059,15 @@ class WebRTCServer
                         if (($qPos = strpos($urlPath, '?')) !== false) $urlPath = substr($urlPath, 0, $qPos);
                         if (($qPos = strpos($urlPath, '#')) !== false) $urlPath = substr($urlPath, 0, $qPos);
                         $urlPath = preg_replace('#/+#', '/', str_replace('\\', '/', $urlPath));
+                        $requestHost = strtolower(trim((string)($headers['host'] ?? '')));
+                        if (preg_match('/^\[([^]]+)\](?::\d+)?$/', $requestHost, $hostMatch)) {
+                            $requestHost = $hostMatch[1];
+                        } elseif (substr_count($requestHost, ':') === 1) {
+                            $requestHost = explode(':', $requestHost, 2)[0];
+                        }
+                        $preferLoopback = in_array($requestHost, ['127.0.0.1', 'localhost', '::1'], true);
 
-                        if (in_array($method, ['OPTIONS','HEAD','POST'], true)) $_dbgObsReport('C', 'src/WebRTCServer.php:http-route-entry', 'HTTP method entered routing', ['clientId'=>(int)$id,'method'=>$method,'path'=>$urlPath,'routeDecision'=>$method === 'POST' ? 'non-get-head-handler' : 'get-head-handler']);
+                        if (in_array($method, ['OPTIONS','HEAD','POST','DELETE','PATCH'], true)) $_dbgObsReport('A,C', 'src/WebRTCServer.php:http-route-entry', 'HTTP method entered routing', ['clientId'=>(int)$id,'method'=>$method,'path'=>$urlPath,'routeDecision'=>$method === 'POST' ? 'non-get-head-handler' : 'get-head-handler']);
 
                         $unsafe  = false;
                         foreach (explode('/', ltrim($urlPath, '/')) as $seg) {
@@ -3065,10 +3087,12 @@ class WebRTCServer
                                 $body = substr($this->clients[$id]['buffer'], $hdrEnd + 4);
                             }
                             if ($method === 'POST' && $contentLength > strlen($body)) {
+
                                 if (empty($this->clients[$id]['_dbgObsPostWaitReported'])) {
                                     $this->clients[$id]['_dbgObsPostWaitReported'] = true;
                                     $_dbgObsReport('B', 'src/WebRTCServer.php:post-body-wait', 'POST waiting for declared body', ['clientId'=>(int)$id,'method'=>$method,'path'=>$urlPath,'contentLength'=>$contentLength,'bodyLength'=>strlen($body),'bufferLen'=>strlen($this->clients[$id]['buffer'])]);
                                 }
+
                                 continue;
                             }
 
@@ -3076,6 +3100,10 @@ class WebRTCServer
                                 $resId = (int)$md[1];
                                 $exists = isset($this->clients[$resId])
                                     && (($this->clients[$resId]['meta']['role'] ?? '') === 'push');
+
+                                $_dbgObsReport('A', 'src/WebRTCServer.php:whip-delete', 'WHIP resource DELETE before publisher removal', ['httpClientId'=>(int)$id,'resourceClientId'=>$resId,'resourceExists'=>$exists,'resourceRole'=>(string)($this->clients[$resId]['meta']['role'] ?? ''),'streamId'=>(string)($this->clients[$resId]['meta']['streamId'] ?? ''),'resourceLastSeenMs'=>isset($this->clients[$resId]['lastSeenAt']) ? (int)((microtime(true)-(float)$this->clients[$resId]['lastSeenAt'])*1000) : null,'userAgent'=>(string)($headers['user-agent'] ?? ''),'requestLine'=>$requestLine]);
+                                $this->_log_std("[DEBUG WHIP DELETE] httpClient={$id} resource={$resId} exists=" . ($exists ? 'yes' : 'no') . " streamId=" . (string)($this->clients[$resId]['meta']['streamId'] ?? '') . " userAgent=" . (string)($headers['user-agent'] ?? '') . "\n");
+
                                 $response = $exists
                                     ? "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
                                     : "HTTP/1.1 404 Not Found\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -3149,7 +3177,7 @@ class WebRTCServer
                                     continue;
                                 }
 
-                                $ans = $this->handleHttpOffer('push', $streamId, $offer, false);
+                                $ans = $this->handleHttpOffer('push', $streamId, $offer, false, $preferLoopback);
                                 if (empty($ans['sdp'])) {
                                     $status = '400 Bad Request';
                                     $content = 'Failed to generate SDP Answer';
@@ -3213,7 +3241,7 @@ class WebRTCServer
                                     continue;
                                 }
 
-                                $ans = $this->handleHttpOffer('play', $streamId, $offer, true);
+                                $ans = $this->handleHttpOffer('play', $streamId, $offer, true, $preferLoopback);
                                 if (empty($ans['sdp'])) {
                                     $status = '400 Bad Request';
                                     $content = 'Failed to generate SDP Answer';
@@ -3391,12 +3419,25 @@ class WebRTCServer
                 if ($_udpDrainPackets > $this->_dbgMediaPerf['udpDrain']['maxBatch']) $this->_dbgMediaPerf['udpDrain']['maxBatch'] = $_udpDrainPackets;
                 if ($_udpDrainPackets >= 64) $this->_dbgMediaPerf['udpDrain']['hitPacketLimit']++;
                 if ($_udpDrainElapsed >= 0.002) $this->_dbgMediaPerf['udpDrain']['hitTimeLimit']++;
+
+                static $_dbgUdpDrainLogAt = 0.0;
+                if ($_udpDrainPackets >= 64 && (microtime(true) - $_dbgUdpDrainLogAt) >= 1.0) {
+                    $_dbgUdpDrainLogAt = microtime(true);
+                    $this->_log_std("[DEBUG UDP drain saturated] packets={$_udpDrainPackets}"
+                        . " elapsedMs=" . number_format($_udpDrainElapsed * 1000, 3, '.', '')
+                        . " packetLimitHits=" . $this->_dbgMediaPerf['udpDrain']['hitPacketLimit']
+                        . " timeLimitHits=" . $this->_dbgMediaPerf['udpDrain']['hitTimeLimit'] . "\n");
+                }
+
             }
 
             $this->handleSTUN();
+
             $now = microtime(true);
             $this->cleanupStaleHttpPlayClients($now);
+
             $this->sendPublisherReceiverReports($now);
+
             $this->flushSctpOutboundQueues();
         }
     }
@@ -3408,6 +3449,7 @@ class WebRTCServer
      */
     private function flushSctpOutboundQueues()
     {
+
         if (method_exists($this, '_flushSctpQueuesImpl')) {
             $this->_flushSctpQueuesImpl();
         }

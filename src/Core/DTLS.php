@@ -174,6 +174,7 @@ trait DTLS
                     if ($plaintext === false || $plaintext === null) {
                         $this->_log_std("Client {$clientId} Failed to decrypt handshake record (epoch={$record['epoch']}, seq={$record['seq']})\n");
                         /** 握手失败，导出数据 */
+
                         if ($this->isDev){
                             if ($record['epoch'] == 1 && $record['seq'] == 0 && !defined('DECRYPT_DUMP_DONE')) {
                                 define('DECRYPT_DUMP_DONE', true);
@@ -264,6 +265,7 @@ trait DTLS
     {
         $clientRandom = $this->clients[$clientId]['clientRandom'] ?? '';
         $serverRandom = $this->clients[$clientId]['serverRandom'] ?? '';
+
         $this->clients[$clientId]['clientCCSSent'] = true;
         if (isset($this->clients[$clientId]['encryption'])) {
             $this->_log_std("Client {$clientId} Client CCS re-received (duplicate), ignore\n");
@@ -276,6 +278,8 @@ trait DTLS
         $hashAlgo = ($cs === 'c02b') ? 'sha384' : 'sha256';
         $ivLen = 4;
         $cipherAlgo = ($cs === 'c02b') ? 'aes-256-gcm' : 'aes-128-gcm';
+
+
         $pms = $this->clients[$clientId]['preMasterSecret'] ?? '';
         $pmsAlt = $this->clients[$clientId]['preMasterSecretAlt'] ?? null;
         $snapTls4 = $this->clients[$clientId]['sessionHashSnapshotTLS4'] ?? ($this->clients[$clientId]['sessionHashSnapshot'] ?? '');
@@ -287,6 +291,7 @@ trait DTLS
         }
         foreach ($allPms as $pmsName => $onePms) {
             if (strlen($onePms) === 32) {
+
                 $msCandidates[$pmsName . '_ext_snapTLS4'] = $this->tls12PRF($onePms, "extended master secret", hash($hashAlgo, $snapTls4, true), 48, $hashAlgo);
                 $msCandidates[$pmsName . '_ext_snapDTLS12'] = $this->tls12PRF($onePms, "extended master secret", hash($hashAlgo, $snapDtls12, true), 48, $hashAlgo);
                 $hhCurTls4 = $this->clients[$clientId]['handshakeHash'] ?? '';
@@ -322,6 +327,7 @@ trait DTLS
         $kbLen = $keyLen * 2 + $ivLen * 2;
         $kbLenExtra = $keyLen * 2 + 8 * 2;
         $splitPermutations = [
+
             'std' => [0, $keyLen, $keyLen, $keyLen, 2 * $keyLen, $ivLen, 2 * $keyLen + $ivLen, $ivLen, $kbLen],
             'civ_first' => [2 * $ivLen, $keyLen, 2 * $ivLen + $keyLen, $keyLen, 0, $ivLen, $ivLen, $ivLen, $kbLen],
             'swp_keys' => [$keyLen, $keyLen, 0, $keyLen, 2 * $keyLen, $ivLen, 2 * $keyLen + $ivLen, $ivLen, $kbLen],
@@ -402,6 +408,7 @@ trait DTLS
                 continue;
             }
             $frag = $ne . $ct . $tag;
+
             $cne = substr($frag, 0, 8);
             $crest = substr($frag, 8);
             $cct = substr($crest, 0, -16);
@@ -414,6 +421,7 @@ trait DTLS
             if (is_string($dec) && hash_equals($dec, $testPlain)) {
                 if ($firstValidVariant === '') $firstValidVariant = $variantName;
             } else {
+
                 $ckey = $enc['clientWriteKey'];
                 $civf = $enc['clientWriteIV'];
                 $ne2 = pack('n', $testEpoch) . substr(pack('J', $testSeq), 2, 6);
@@ -521,11 +529,12 @@ trait DTLS
 
         $extendedSeq = $nonceExplicit;
         $plaintextLen = strlen($ciphertext);
+
         $versionCandidates = [$version, "\xFE\xFD", "\xFD\xFD"];
         $lengthCandidates = [$plaintextLen];
-
         $tlsFragLen = strlen($data);
         $lengthCandidates[] = $tlsFragLen - $explicitLen - $tagLen;
+
         $loggedVariantErrors = 0;
         $loggedVariants = [];
         foreach ($variants as $variantName => $enc) {
@@ -539,6 +548,7 @@ trait DTLS
                 substr($ivFixed, 0, 2) . $nonceExplicit . substr($ivFixed, 2, 2),
                 $ivFixed . substr($nonceExplicit, 2, 8),
             ];
+
             $ivLen = strlen($ivFixed);
             if ($ivLen === 8) {
                 $nonceCandidates[] = $ivFixed ^ $nonceExplicit;
@@ -554,6 +564,7 @@ trait DTLS
                         $ad = $extendedSeq . chr($contentType) . $vVer . pack('n', $vLen);
                         $plaintext = openssl_decrypt($ciphertext, $enc['cipherAlgo'], $key, OPENSSL_RAW_DATA, $nonce, $tag, $ad);
                         if ($plaintext !== false) {
+
                             $nonceModeByNcIdx = [
                                 0 => 'fix_exp',
                                 1 => 'exp_fix',
@@ -669,6 +680,7 @@ trait DTLS
 
             $msList['p' . $pIdx . '_ems_CR_SR'] = $this->tls12PRF($pms, "extended master secret", $cr . $sr, 48, $hashAlgo);
             $msList['p' . $pIdx . '_ems_SR_CR'] = $this->tls12PRF($pms, "extended master secret", $sr . $cr, 48, $hashAlgo);
+
             $msList['p' . $pIdx . '_legacy_CR_SR'] = $this->tls12PRF($pms, "master secret", $cr . $sr, 48, $hashAlgo);
             $msList['p' . $pIdx . '_legacy_SR_CR'] = $this->tls12PRF($pms, "master secret", $sr . $cr, 48, $hashAlgo);
 
@@ -710,11 +722,13 @@ trait DTLS
                 foreach ($seedCands as $seedName => $seed) {
                     foreach ($kbSizes as $kbLen => $ivLen) {
                         $kb = $this->tls12PRF($ms, $lbl, $seed, $kbLen, $hashAlgo);
+
                         $splits = [
                             ['cwk' => substr($kb, 0, 16), 'swk' => substr($kb, 16, 16), 'cwi' => substr($kb, 32, $ivLen), 'swi' => substr($kb, 32 + $ivLen, $ivLen)],
                             ['swk' => substr($kb, 0, 16), 'cwk' => substr($kb, 16, 16), 'cwi' => substr($kb, 32, $ivLen), 'swi' => substr($kb, 32 + $ivLen, $ivLen)],
                             ['cwk' => substr($kb, 0, 16), 'swk' => substr($kb, 16, 16), 'swi' => substr($kb, 32, $ivLen), 'cwi' => substr($kb, 32 + $ivLen, $ivLen)],
                             ['swk' => substr($kb, 0, 16), 'cwk' => substr($kb, 16, 16), 'swi' => substr($kb, 32, $ivLen), 'cwi' => substr($kb, 32 + $ivLen, $ivLen)],
+
                             ['cwi' => substr($kb, 0, $ivLen), 'swi' => substr($kb, $ivLen, $ivLen), 'cwk' => substr($kb, 2 * $ivLen, 16), 'swk' => substr($kb, 2 * $ivLen + 16, 16)],
                             ['swi' => substr($kb, 0, $ivLen), 'cwi' => substr($kb, $ivLen, $ivLen), 'cwk' => substr($kb, 2 * $ivLen, 16), 'swk' => substr($kb, 2 * $ivLen + 16, 16)],
                             ['cwi' => substr($kb, 0, $ivLen), 'swi' => substr($kb, $ivLen, $ivLen), 'swk' => substr($kb, 2 * $ivLen, 16), 'cwk' => substr($kb, 2 * $ivLen + 16, 16)],
@@ -731,7 +745,7 @@ trait DTLS
                                 $nonces['fix_exp'] = str_pad(substr($ivf . $nonceExplicit, 0, 12), 12, "\0");
                                 $nonces['exp_fix'] = str_pad(substr($nonceExplicit . $ivf, 0, 12), 12, "\0");
                                 if ($ivfLen === 4) {
-                                    $nonces['fix_xor_exp_plus_fix'] = $ivf . ($nonceExplicit ^ str_repeat($ivf, 2)); // 12
+                                    $nonces['fix_xor_exp_plus_fix'] = $ivf . ($nonceExplicit ^ str_repeat($ivf, 2));
                                 }
                                 if ($ivfLen === 8) {
                                     $nonces['xor8pad'] = str_pad($ivf ^ $nonceExplicit, 12, "\0", STR_PAD_RIGHT);
@@ -758,6 +772,7 @@ trait DTLS
                                                 $this->_log_std("  ver=" . bin2hex($vVer) . " len=$vLen contentType=$contentType\n");
                                                 $this->_log_std("  key=" . bin2hex($k) . " fixedIv=" . bin2hex($ivf) . " nonce=" . bin2hex($nonce) . "\n");
                                                 $this->_log_std("  pt len=" . strlen($pt) . " hex=" . bin2hex($pt) . "\n");
+
                                                 $this->clients[$clientId]['encryption'] = [
                                                     'cipherAlgo' => $cipherAlgo,
                                                     'clientWriteKey' => $sp['cwk'],
@@ -778,7 +793,6 @@ trait DTLS
 
                                                 $this->clients[$clientId]['masterSecret'] = $ms;
                                                 $this->clients[$clientId]['fbMsName'] = $msName;
-
                                                 if (strlen($pt) >= 4 && ord($pt[0]) === 20) {
                                                     $vlen = (ord($pt[1]) << 16) | (ord($pt[2]) << 8) | ord($pt[3]);
 
@@ -814,7 +828,6 @@ trait DTLS
                                                             $foundVDMatch = true;
                                                             $chosenHH = $hhCN;
                                                             $expectedVD = $expVD;
-
                                                             $this->clients[$clientId]['matchedHhashName'] = $hhCN;
                                                             $this->clients[$clientId]['encryption']['matchedHhashName'] = $hhCN;
                                                             break;
@@ -1208,6 +1221,7 @@ trait DTLS
         $this->_log_std("Client {$clientId} After compression: pos={$pos}, remaining=" . (strlen($data) - $pos) . " bytes, hex(32B)=" . bin2hex(substr($data, $pos, min(32, strlen($data) - $pos))) . "\n");
 
         if ($pos + 2 > strlen($data)) {
+
             $this->_log_std("Client {$clientId} No extensions (pos={$pos}, totalLen=" . strlen($data) . ")\n");
             return reset($clientSuites) ?? "\x00\x2f";
         }
@@ -1469,8 +1483,10 @@ trait DTLS
         $cipherSuite = $this->clients[$clientId]['cipherSuite'];
         $cs = bin2hex($cipherSuite);
         $masterHashAlgo = ($cs === 'c02b') ? 'sha384' : 'sha256';
+
         $msLegacy = $this->tls12PRF($preMasterSecret, "master secret", $clientRandom . $serverRandom, 48, $masterHashAlgo);
         $this->_log_std("Client {$clientId} MS_legacy=" . bin2hex($msLegacy) . "\n");
+
         $snapTls4 = $this->clients[$clientId]['sessionHashSnapshotTLS4'] ?? ($this->clients[$clientId]['handshakeHash'] ?? '');
         $snapDtls12 = $this->clients[$clientId]['sessionHashSnapshotDTLS12'] ?? ($this->clients[$clientId]['handshakeHashDTLS12'] ?? ($this->clients[$clientId]['handshakeHash'] ?? ''));
         $sessHashTls4 = hash($masterHashAlgo, $snapTls4, true);
@@ -1479,6 +1495,7 @@ trait DTLS
         $msExtDtls12 = $this->tls12PRF($preMasterSecret, "extended master secret", $sessHashDtls12, 48, $masterHashAlgo);
         $this->_log_std("Client {$clientId} MS_extTLS4  (snap=" . strlen($snapTls4) . "B h=" . bin2hex($sessHashTls4) . ")=" . bin2hex($msExtTls4) . "\n");
         $this->_log_std("Client {$clientId} MS_extDTLS12(snap=" . strlen($snapDtls12) . "B h=" . bin2hex($sessHashDtls12) . ")=" . bin2hex($msExtDtls12) . "\n");
+
         $this->clients[$clientId]['masterSecret'] = $msLegacy;
         $this->clients[$clientId]['masterSecretLegacy'] = $msLegacy;
         $this->clients[$clientId]['masterSecretExtendedTLS4'] = $msExtTls4;
@@ -1507,6 +1524,7 @@ trait DTLS
 
         $cs = bin2hex($this->clients[$clientId]['cipherSuite']);
         $hashAlgo = ($cs === 'c02b') ? 'sha384' : 'sha256';
+
         $hhTls4 = $this->clients[$clientId]['handshakeHash'] ?? '';
         $hhDtls12 = $this->clients[$clientId]['handshakeHashDTLS12'] ?? $hhTls4;
         $hashTls4 = hash($hashAlgo, $hhTls4, true);
@@ -1571,6 +1589,7 @@ trait DTLS
         } else {
             $this->_log_std("Client {$clientId} WARNING: verify_data did NOT match any MS×hhash combo, continue with pinned variant={$pinnedVariant}\n");
         }
+
         $bodyLen = strlen($clientVerifyData);
         if (!isset($len3) || !is_callable($len3)) {
             $len3 = function ($v) {
@@ -1617,6 +1636,7 @@ trait DTLS
             && method_exists($this, 'kickFaststartForSubscriber')) {
             $this->kickFaststartForSubscriber((int)$clientId);
         }
+
         static $_dbgDtlsReported = [];
         if (empty($_dbgDtlsReported[$clientId])) {
             $_dbgDtlsReported[$clientId] = true;
@@ -1626,9 +1646,10 @@ trait DTLS
             preg_match('/^DEBUG_SERVER_URL=(.+)$/m', (string)$_dbgEnv, $_dbgUrlMatch);
             $_dbgUrl = trim($_dbgUrlMatch[1] ?? 'http://127.0.0.1:7777/event');
             $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'pre-fix','hypothesisId'=>'D','location'=>'src/Core/DTLS.php:handshake-complete','msg'=>'[DEBUG] DTLS complete SRTP and remote candidate','data'=>['clientId'=>(int)$clientId,'role'=>(string)($_dbgClient['meta']['role'] ?? ''),'streamId'=>(string)($_dbgClient['meta']['streamId'] ?? ''),'srtpKeyed'=>!empty($_dbgClient['srtpKeyed']),'srtpRx'=>!empty($_dbgClient['srtpRx']),'srtpTx'=>!empty($_dbgClient['srtpTx']),'remoteCandidate'=>['ip'=>(string)($_dbgRc['ip'] ?? ''),'port'=>(int)($_dbgRc['port'] ?? 0),'type'=>(string)($_dbgRc['_type'] ?? '')],'remoteCandidateValidated'=>!empty($_dbgClient['remoteCandidateValidated'])],'ts'=>(int)(microtime(true)*1000)]);
-            //todo
+            // todo
             @file_get_contents($_dbgUrl, false, stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/json\r\n",'content'=>$_dbgPayload,'timeout'=>0.05,'ignore_errors'=>true]]));
         }
+
         $this->_log_std("Client {$clientId} DTLS handshake completed!\n");
         $this->_log_std("Client {$clientId} WebRTC连接建立成功！\n");
     }
@@ -1814,12 +1835,14 @@ trait DTLS
         $clientMS = substr($mat, 32, 14);
         $serverMS = substr($mat, 46, 14);
         try {
+
             $rx = new \Xiaosongshu\Webrtc\Core\Srtp($clientMK, $clientMS);
             $tx = new \Xiaosongshu\Webrtc\Core\Srtp($serverMK, $serverMS);
         } catch (\Throwable $e) {
             $this->_log_std("Client {$clientId} SRTP ctx init failed: " . $e->getMessage() . "\n");
             return false;
         }
+
         $clientIdLocal = $clientId;
         $rx->logger = function (string $msg) use ($clientIdLocal) {
             $this->_log_std("Client {$clientIdLocal} SRTP " . $msg);
@@ -1882,6 +1905,7 @@ trait DTLS
         $this->clients[$clientId]['serverRandom'] = $random;
 
         $compression = "\x00";
+
         $clientHasEms = $this->clients[$clientId]['clientHasEms'] ?? false;
         $clientHasRenego = $this->clients[$clientId]['clientHasRenego'] ?? false;
         $clientHasUseSrtp = !empty($this->clients[$clientId]['clientHasUseSrtp']);
@@ -2095,6 +2119,7 @@ trait DTLS
 
         $this->clients[$clientId]['sessionHashSnapshotTLS4'] = $this->clients[$clientId]['handshakeHash'];
         $this->clients[$clientId]['sessionHashSnapshotDTLS12'] = $this->clients[$clientId]['handshakeHashDTLS12'];
+
         $this->clients[$clientId]['sessionHashSnapshot'] = $this->clients[$clientId]['handshakeHashDTLS12'];
         $_snapTls4 = $this->clients[$clientId]['sessionHashSnapshotTLS4'];
         $_snapDtls = $this->clients[$clientId]['sessionHashSnapshotDTLS12'];
@@ -2170,6 +2195,7 @@ trait DTLS
         $finishedMsg .= chr(($bodyLen >> 8) & 0xFF);
         $finishedMsg .= chr($bodyLen & 0xFF);
         $finishedMsg .= $finishedBody;
+
         $epoch = $this->clients[$clientId]['dtlsEpoch'] ?? 1;
         $seq = $this->clients[$clientId]['dtlsSeq'] ?? 0;
         $encrypted = $this->encryptDTLSRecord($clientId, $finishedMsg, $epoch, $seq, 0x16);

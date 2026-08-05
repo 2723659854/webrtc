@@ -52,80 +52,72 @@ trait STUN
             $clientIP = $fromParts[0];
             $clientPort = (int)$fromParts[1];
 
+            $responseUsername = '';
+            $useCandidate = false;
+            $attributesEnd = min(strlen($data), 20 + $msgLen);
+            for ($offset = 20; ($offset + 4) <= $attributesEnd;) {
+                $attribute = unpack('ntype/nlength', substr($data, $offset, 4));
+                $attributeLength = (int)$attribute['length'];
+                if (($offset + 4 + $attributeLength) > $attributesEnd) break;
+
+                if ((int)$attribute['type'] === 0x0006) {
+                    $responseUsername = substr($data, $offset + 4, $attributeLength);
+                } elseif ((int)$attribute['type'] === 0x0025) {
+                    $useCandidate = true;
+                }
+                $offset += 4 + (($attributeLength + 3) & ~3);
+            }
+
+            if ($responseUsername === '') return;
+
+            if ($useCandidate) {
+                $previous = $this->clients[$clientId]['remoteCandidate'] ?? null;
+                $previousAddress = is_array($previous)
+                    ? (string)$previous['ip'] . ':' . (int)$previous['port']
+                    : 'none';
+                $newAddress = $clientIP . ':' . $clientPort;
+                $this->clients[$clientId]['remoteCandidate'] = [
+                    'ip' => $clientIP,
+                    'port' => $clientPort,
+                ];
+                $this->clients[$clientId]['remoteCandidateValidated'] = true;
+                $this->clients[$clientId]['remoteCandidateTentativeLocked'] = true;
+                if ($previousAddress !== $newAddress) {
+                    $this->_log_std("[ICE nominated candidate] Client {$clientId}: {$previousAddress} -> {$newAddress}\n");
+                }
+            }
+
+            $usernamePadding = (4 - (strlen($responseUsername) % 4)) % 4;
+            $usernameAttr = pack('nn', 0x0006, strlen($responseUsername))
+                . $responseUsername
+                . str_repeat("\x00", $usernamePadding);
+
             $xorPort = $clientPort ^ 0x2112;
             $xorIP = ip2long($clientIP) ^ 0x2112A442;
             $xorAttr = "\x00\x20\x00\x08\x00\x01";
             $xorAttr .= pack('n', $xorPort);
             $xorAttr .= pack('N', $xorIP);
 
-            $headerForMI = pack('n', 0x0101) . pack('n', 36) . $magicCookie . $transactionId;
-            $msgForHmac = $headerForMI . $xorAttr;
-            $hmac = hash_hmac('sha1', $msgForHmac, $icePwd, true);
+            $attributesBeforeIntegrity = $usernameAttr . $xorAttr;
+            $integrityLength = strlen($attributesBeforeIntegrity) + 24;
+            $headerForMI = pack('n', 0x0101) . pack('n', $integrityLength) . $magicCookie . $transactionId;
+            $hmac = hash_hmac('sha1', $headerForMI . $attributesBeforeIntegrity, $icePwd, true);
             $miAttr = "\x00\x08\x00\x14" . $hmac;
-            $headerForFP = pack('n', 0x0101) . pack('n', 44) . $magicCookie . $transactionId;
-            $msgForCrc = $headerForFP . $xorAttr . $miAttr;
-            $crc = crc32($msgForCrc) ^ 0x5354554E;
+
+            $attributesBeforeFingerprint = $attributesBeforeIntegrity . $miAttr;
+            $responseLength = strlen($attributesBeforeFingerprint) + 8;
+            $headerForFP = pack('n', 0x0101) . pack('n', $responseLength) . $magicCookie . $transactionId;
+            $crc = crc32($headerForFP . $attributesBeforeFingerprint) ^ 0x5354554E;
             $fpAttr = "\x80\x28\x00\x04" . pack('N', $crc);
 
-            $response = $headerForFP . $xorAttr . $miAttr . $fpAttr;
+            $response = $headerForFP . $attributesBeforeFingerprint . $fpAttr;
 
             $sent = @stream_socket_sendto($this->udpSocket, $response, 0, $from);
 
-            static $_stunTrace = [];
-            $traceNow = microtime(true);
-            $txHex = bin2hex($transactionId);
-            $traceKey = $clientId . ':' . $txHex;
-            $previousAt = (float)($_stunTrace[$traceKey] ?? 0.0);
-            $_stunTrace[$traceKey] = $traceNow;
-            $username = '';
-            $hasRequestIntegrity = false;
-            $hasRequestFingerprint = false;
-            $useCandidate = false;
-            for ($offset = 20, $end = min(20 + $msgLen, strlen($data)); ($offset + 4) <= $end;) {
-                $attributeType = unpack('n', substr($data, $offset, 2))[1];
-                $attributeLength = unpack('n', substr($data, $offset + 2, 2))[1];
-                if (($offset + 4 + $attributeLength) > $end) break;
-                if ($attributeType === 0x0006) $username = substr($data, $offset + 4, $attributeLength);
-                if ($attributeType === 0x0008) $hasRequestIntegrity = true;
-                if ($attributeType === 0x8028) $hasRequestFingerprint = true;
-                if ($attributeType === 0x0025) $useCandidate = true;
-                $offset += 4 + (($attributeLength + 3) & ~3);
-            }
-            $meta = is_array($this->clients[$clientId]['meta'] ?? null) ? $this->clients[$clientId]['meta'] : [];
-            $payload = json_encode([
-                'sessionId' => 'obs-dynamic-scene-disconnect',
-                'runId' => 'pre-fix-consent-trace',
-                'hypothesisId' => 'ice-consent-integrity',
-                'location' => 'src/Core/STUN.php:handleSTUNMessage',
-                'msg' => '[DEBUG] STUN consent transaction',
-                'data' => [
-                    'clientId' => (int)$clientId,
-                    'role' => (string)($meta['role'] ?? ''),
-                    'streamId' => (string)($meta['streamId'] ?? ''),
-                    'from' => $from,
-                    'transactionId' => $txHex,
-                    'retransmission' => $previousAt > 0.0,
-                    'retransmitAfterMs' => $previousAt > 0.0 ? (int)(($traceNow - $previousAt) * 1000) : null,
-                    'requestLength' => strlen($data),
-                    'declaredAttributeLength' => $msgLen,
-                    'username' => $username,
-                    'requestHasIntegrity' => $hasRequestIntegrity,
-                    'requestHasFingerprint' => $hasRequestFingerprint,
-                    'useCandidate' => $useCandidate,
-                    'icePasswordPresent' => $icePwd !== '',
-                    'responseLength' => strlen($response),
-                    'sentBytes' => $sent === false ? -1 : (int)$sent,
-                    'responseHeaderHex' => bin2hex(substr($response, 0, 20)),
-                ],
-                'ts' => (int)($traceNow * 1000),
-            ]);
-            $this->_udpDbgHttpPost($payload, 'obs-dynamic-scene-disconnect');
-            if (count($_stunTrace) > 256) $_stunTrace = array_slice($_stunTrace, -128, null, true);
-
-            static $_stunSummary = [];
+            static $_stunSummary = [], $_stunTransactions = [];
             $now = microtime(true);
             if (!isset($_stunSummary[$clientId])) {
-                $_stunSummary[$clientId] = ['requests' => 0, 'responses' => 0, 'failed' => 0, 'lastResponseLen' => 0, 'lastLog' => 0.0];
+                $_stunSummary[$clientId] = ['requests' => 0, 'responses' => 0, 'failed' => 0, 'lastResponseLen' => 0, 'lastLog' => 0.0, 'lastRequestAt' => 0.0];
             }
             $_stunSummary[$clientId]['requests']++;
             if ($sent === strlen($response)) {
@@ -134,6 +126,23 @@ trait STUN
                 $_stunSummary[$clientId]['failed']++;
             }
             $_stunSummary[$clientId]['lastResponseLen'] = strlen($response);
+
+            $transactionHex = bin2hex($transactionId);
+            $transactionKey = $clientId . ':' . $transactionHex;
+            $previousTransactionAt = (float)($_stunTransactions[$transactionKey] ?? 0.0);
+            $requestIntervalMs = $_stunSummary[$clientId]['lastRequestAt'] > 0.0
+                ? (int)(($now - $_stunSummary[$clientId]['lastRequestAt']) * 1000)
+                : null;
+            $_stunTransactions[$transactionKey] = $now;
+            $_stunSummary[$clientId]['lastRequestAt'] = $now;
+            if (($this->clients[$clientId]['meta']['role'] ?? '') === 'push') {
+                $this->_log_std("[DEBUG ICE consent] client={$clientId} tx={$transactionHex}"
+                    . " intervalMs=" . ($requestIntervalMs === null ? '-' : $requestIntervalMs)
+                    . " retrans=" . ($previousTransactionAt > 0.0 ? 'yes' : 'no')
+                    . " retransAfterMs=" . ($previousTransactionAt > 0.0 ? (int)(($now - $previousTransactionAt) * 1000) : '-')
+                    . " sent=" . ($sent === false ? '-1' : $sent) . "/" . strlen($response) . "\n");
+            }
+
             if ($_stunSummary[$clientId]['lastLog'] === 0.0 || ($now - $_stunSummary[$clientId]['lastLog']) >= 60.0) {
                 $this->_log_std("Client {$clientId} STUN summary requests={$_stunSummary[$clientId]['requests']} responses={$_stunSummary[$clientId]['responses']} failed={$_stunSummary[$clientId]['failed']} lastResponseLen={$_stunSummary[$clientId]['lastResponseLen']}\n");
                 $_stunSummary[$clientId]['requests'] = 0;

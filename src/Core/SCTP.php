@@ -72,42 +72,42 @@ trait SCTP
             $this->_log_std("Client {$clientId} SCTP CHUNK: type=$chunkType flags=$chunkFlags len=$chunkLen bodylen=" . strlen($chunkBody) . "\n");
             switch ($chunkType) {
                 /** sctp初始化 */
-                case 1:
+                case 1: // INIT (browser → server)
                     $initAck = $this->handleSCTP_INIT($clientId, $s, $chunkBody);
                     if ($initAck !== false) $replies[] = $initAck;
                     break;
 
                 /** cookie-echo 浏览器并不会处理cookie，而是原样返回给服务器 */
-                case 10:
+                case 10: // COOKIE-ECHO (after INIT-ACK, browser sends back the cookie we gave)
                     $ack = $this->handleSCTP_COOKIE_ECHO($clientId, $s);
                     if ($ack !== false) $replies[] = $ack;
                     $sackNeeded = true;
                     break;
                 /** 处理sctp数据 */
-                case 0:
+                case 0: // DATA chunk
                     $this->handleSCTP_DATA($clientId, $s, $chunkBody, $chunkFlags);
                     $sackNeeded = true;
                     break;
                 /** 处理浏览器的ack消息 */
-                case 3:
+                case 3: // SACK (browser acknowledges our DATA) — log and ignore for now
                     $this->handleSCTP_SACK($clientId, $s, $chunkBody);
                     break;
                 /** 处理浏览器的心跳 */
-                case 4:
+                case 4: // HEARTBEAT
                     $hbAck = $this->handleSCTP_HEARTBEAT($clientId, $s, $chunkBody);
                     if ($hbAck !== false) $replies[] = $hbAck;
                     break;
                 /** 处理浏览器关闭连接 */
-                case 7:
+                case 7: // SHUTDOWN
                     $shutAck = $this->handleSCTP_SHUTDOWN($clientId, $s);
                     if ($shutAck !== false) $replies[] = $shutAck;
                     break;
                 /** 更新连接状态 */
-                case 15:
+                case 15: // SHUTDOWN-COMPLETE
                     $s['state'] = 'CLOSED';
                     break;
                 /** 更新连接状态 */
-                case 6:
+                case 6: // ABORT
                     $s['state'] = 'CLOSED';
                     $this->_log_std("Client {$clientId} SCTP ABORT received.\n");
                     break;
@@ -148,42 +148,38 @@ trait SCTP
     {
         $ivfLen = strlen($ivf);
         switch ($mode) {
-            case 'fix_exp':
+            case 'fix_exp':    // RFC 5288 standard: iv_fixed || nonce_explicit → exactly 12
                 $nv = $ivf . $nonceExplicit;
                 return (strlen($nv) === 12) ? $nv : str_pad(substr($nv, 0, 12), 12, "\0");
-            case 'exp_fix':
+            case 'exp_fix':    // reversed: nonce_explicit || iv_fixed
                 $nv = $nonceExplicit . $ivf;
                 return (strlen($nv) === 12) ? $nv : str_pad(substr($nv, 0, 12), 12, "\0");
             case 'split_iv_2_2':
                 if ($ivfLen >= 4) $nv = substr($ivf, 0, 2) . $nonceExplicit . substr($ivf, 2, 2);
                 else $nv = $ivf . $nonceExplicit;
                 return (strlen($nv) === 12) ? $nv : str_pad(substr($nv, 0, 12), 12, "\0");
-            case 'fix_exp_noepoch':
+            case 'fix_exp_noepoch':  // iv_fixed || nonce_explicit[2..9] (skip epoch bytes)
                 $nv = $ivf . substr($nonceExplicit, 2, 8);
                 return (strlen($nv) === 12) ? $nv : str_pad(substr($nv, 0, 12), 12, "\0");
-            case 'xor8pad':
+            case 'xor8pad':  // only used when ivfLen=8: (ivf ^ nonceExplicit) pad right → 12
                 if ($ivfLen === 8) return str_pad($ivf ^ $nonceExplicit, 12, "\0", STR_PAD_RIGHT);
                 return str_pad(substr($ivf . $nonceExplicit, 0, 12), 12, "\0");
             case 'xor8padL':
                 if ($ivfLen === 8) return str_pad($ivf ^ $nonceExplicit, 12, "\0", STR_PAD_LEFT);
                 return str_pad(substr($ivf . $nonceExplicit, 0, 12), 12, "\0");
-            case 'fix_xor_exp_plus_fix':
+            case 'fix_xor_exp_plus_fix':  // only for ivfLen=4
                 if ($ivfLen === 4) return $ivf . ($nonceExplicit ^ str_repeat($ivf, 2));
                 return str_pad(substr($ivf . $nonceExplicit, 0, 12), 12, "\0");
-            default:
+            default:  // RFC 5288
                 $nv = $ivf . $nonceExplicit;
                 return (strlen($nv) === 12) ? $nv : str_pad(substr($nv, 0, 12), 12, "\0");
         }
     }
 
     /**
-     *  发送dtls消息
-     *  Encrypt + send SCTP packet as DTLS Application Data (type=23).
-     * @param $clientId
-     * @param $sctpPacket
-     * @return void
+     * 发送dtls消息
+     * Encrypt + send SCTP packet as DTLS Application Data (type=23).
      */
-
     private function sendSCTPOverDTLS($clientId, $sctpPacket)
     {
         /** 没有完成握手，不可发送消息 */
@@ -211,7 +207,6 @@ trait SCTP
             return;
         }
 
-
         $nonceMode = !empty($enc['nonceMode']) ? $enc['nonceMode'] : 'fix_exp';
         $aadVersion = !empty($enc['aadVersion']) ? $enc['aadVersion'] : "\xFE\xFD";
 
@@ -226,7 +221,6 @@ trait SCTP
         if (!is_string($nonce) || strlen($nonce) !== 12) {
             $nonce = str_pad(substr($ivFix . $nonceExplicit, 0, 12), 12, "\0");
         }
-
         $ad = $headerES . chr(0x17) . $aadVersion . pack('n', $ptLen);
 
         $tag = '';
@@ -279,7 +273,6 @@ trait SCTP
      */
     private function joinSCTPChunksIntoPacket(&$s, $chunks)
     {
-
         $useZeroCrc = !empty($s['zero_checksum_ok']);
 
         $hdrNoChk = pack('nnN', (int)$s['my_port'], (int)$s['peer_port'], (int)$s['send_vtag']);
@@ -393,7 +386,6 @@ trait SCTP
             $initParamIdx++;
         }
 
-
         $INP_RCV_EDMID = 0x00000033;
         $INP_PRSCTP_SUPPORTED = true;
         $INP_ECN_SUPPORTED = false;
@@ -418,6 +410,7 @@ trait SCTP
             (int)$s['my_in_streams'],
             (int)$s['my_next_tsn']
         );
+
         $chunk_len = 20;
         $padding_len = 0;
         $paramsBlob = '';
@@ -500,10 +493,12 @@ trait SCTP
                 }
                 $parameter_len = 8;
                 $paramsBlob .= pack('nnN', 0x0005, $parameter_len, (int)$addr_val);
+
                 $padding_len = 0;
                 $chunk_len += $parameter_len;
             }
         }
+
         if ($padding_len > 0) {
             $paramsBlob .= str_repeat("\x00", $padding_len);
             $chunk_len += $padding_len;
@@ -515,7 +510,6 @@ trait SCTP
         $tv_usec = (int)(($mt - $tv_sec) * 1000000);
         $INP_COOKIE_LIFE_SEC = 60;
         $_s = '';
-
         $_s .= pack('a16', "PHP-SCTP-v1\x00\x00\x00\x00\x00");
         $_s .= pack('NN', $tv_sec, $tv_usec);
         $_s .= pack('N', (int)($INP_COOKIE_LIFE_SEC * 1000));
@@ -545,7 +539,6 @@ trait SCTP
         if (strlen($_s) !== 104) {
             $this->_log_std("  !!! Cookie sizeof BUG: strlen(_s)=" . strlen($_s) . " != 104, abort\n");
         }
-
         $_s .= pack('NNNN', (int)$clientId, $tv_sec, 0, 0);
         $cookie_raw = $_s;
         $cookie_raw_len = strlen($cookie_raw);
@@ -582,6 +575,7 @@ trait SCTP
      */
     private function handleSCTP_COOKIE_ECHO($clientId, &$s)
     {
+
         $s['send_vtag'] = (int)$s['peer_initiate_tag'];
         $s['state'] = 'ESTABLISHED';
         $this->_log_std("Client {$clientId} SCTP COOKIE-ECHO received -> ESTABLISHED (send_vtag upgraded to peer_initiate_tag={$s['send_vtag']}, my_vtag={$s['my_vtag']}, my_next_tsn={$s['my_next_tsn']}, peer_first_tsn={$s['peer_next_tsn']})\n");
@@ -683,23 +677,23 @@ trait SCTP
         }
 
         switch ($ppid) {
-            case 50:
+            case 50: // WebRTC DCEP
                 $this->handleDCEP($clientId, $s, $sid, $userData);
                 break;
-            case 51:
+            case 51: // WebRTC String (UTF-8)
                 $text = $userData;
                 $this->deliverDataChannelMessage($clientId, $sid, $text, false);
                 break;
-            case 56:
+            case 56: // WebRTC String partial reliable
                 $text = $userData;
                 $this->deliverDataChannelMessage($clientId, $sid, $text, false);
                 break;
-            case 52:
+            case 52: // Deprecated: string with empty "channel" framing
                 $text = substr($userData, 2);
                 $this->deliverDataChannelMessage($clientId, $sid, $text, false);
                 break;
-            case 53:
-            case 57:
+            case 53: // binary
+            case 57: // binary PR
                 $this->deliverDataChannelMessage($clientId, $sid, $userData, true);
                 break;
             default:
@@ -744,7 +738,6 @@ trait SCTP
 
         $sack = $this->buildSCTP_SACK($s);
         $chunks = [];
-
         if ($sack !== false) $chunks[] = $this->padTo4($sack);
         $chunks[] = $chunk;
 
@@ -779,7 +772,6 @@ trait SCTP
         if (strlen($userData) < 1) return;
         $msgType = ord($userData[0]);
         if ($msgType === 0x03) {
-
             if (strlen($userData) < 13) return;
             $channelType = ord($userData[1]);
             $priority = ord($userData[2]);
@@ -837,7 +829,6 @@ trait SCTP
                 $this->_log_std("Client {$clientId} onmessage callback ERROR: " . $e->getMessage() . "\n");
             }
         } else {
-
             $echo = $isBinary ? $payload : ("[Server echo] " . $payload);
             $this->sendDataChannel($clientId, $echo, $isBinary ? 53 : 51, $sid);
         }

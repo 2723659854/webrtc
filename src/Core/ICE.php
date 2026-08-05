@@ -78,13 +78,11 @@ trait ICE
         if (!empty($answerInfo['videoPTs']) && is_array($answerInfo['videoPTs'])) {
             $pvSmart = $this->_pickRealPrimaryPT($answerInfo['videoPTs'], 'video');
             if ($pvSmart > 0 && isset($answerInfo['videoPTs'][$pvSmart])) {
-
                 $this->clients[$clientId]['primaryVideoPT'] = $pvSmart;
             } else {
                 $vpts = array_keys($answerInfo['videoPTs']);
                 $this->clients[$clientId]['primaryVideoPT'] = (int)($vpts[0] ?? 0);
             }
-
             $this->clients[$clientId]['videoPTs'] = $this->_reorderPTsForSubscriber(
                 is_array($this->clients[$clientId]['videoPTs']) ? $this->clients[$clientId]['videoPTs'] : [],
                 (int)$this->clients[$clientId]['primaryVideoPT']
@@ -98,7 +96,6 @@ trait ICE
                 $apts = array_keys($answerInfo['audioPTs']);
                 $this->clients[$clientId]['primaryAudioPT'] = (int)($apts[0] ?? 0);
             }
-
             $this->clients[$clientId]['audioPTs'] = $this->_reorderPTsForSubscriber(
                 is_array($this->clients[$clientId]['audioPTs']) ? $this->clients[$clientId]['audioPTs'] : [],
                 (int)$this->clients[$clientId]['primaryAudioPT']
@@ -214,7 +211,6 @@ trait ICE
      */
     private function _defaultSfuRelayPublisherOfferToSubscribers(int $pushId, string $pushOfferSdp): void
     {
-
         $streamId = (string)$this->getClientMeta($pushId, 'streamId', '');
         $playIds = array_values(array_filter(
             $this->getClientsByMeta('streamId', $streamId),
@@ -242,7 +238,6 @@ trait ICE
             $this->_log_std("Client {$clientId} SKIP TCP candidate (transport=tcp or tcptype present, server only supports UDP)\n");
             return;
         }
-
         $transport = 'udp';
         if (preg_match('/^\s*candidate:\S+\s+\d+\s+(udp|tcp)\s+/i', $iceCandidate, $tm)) {
             $transport = strtolower($tm[1]);
@@ -256,7 +251,6 @@ trait ICE
             $candidateIP   = $matches[1];
             $candidatePort = (int)$matches[2];
             $candidateType = $matches[3];
-
             if ($candidateIP === '0.0.0.0' || $candidatePort <= 0 || $candidatePort > 65535) {
                 $this->_log_std("Client {$clientId} SKIP invalid candidate ip={$candidateIP} port={$candidatePort}\n");
                 return;
@@ -347,7 +341,6 @@ trait ICE
                 'sdp' => $offerSdp,
                 'streamId' => $streamId,
             ]);
-
             $this->clients[$subscriberId]['_sfuOfferFired'] = true;
             $this->_log_std("[_fireSubscriberIfReady] 已向 subscriber={$subscriberId} 发送 SFU Offer (len=" . strlen($offerSdp) . ")\n");
         } else {
@@ -358,7 +351,6 @@ trait ICE
     private function _fireSubscriberIfReady(int $subscriberId, string $streamId): void
     {
         $this->_log_std("[_fireSubscriberIfReady ENTER] client={$subscriberId} streamId={$streamId}\n");
-
         if (!empty($this->clients[$subscriberId]['_sfuOfferFired'])) {
             $this->_log_std("[_fireSubscriberIfReady] client={$subscriberId} 已发送过 Offer，跳过\n");
             return;

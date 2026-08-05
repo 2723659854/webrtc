@@ -42,7 +42,6 @@ class SRTP
 {
     const PROFILE_AES128_CM_SHA1_80 = 0x0001;
 
-    // ---- KDF label constants (RFC 3711 Table 6) ----
     const LABEL_RTP_ENC  = 0x00;
     const LABEL_RTP_AUTH = 0x01;
     const LABEL_RTP_SALT = 0x02;
@@ -50,7 +49,6 @@ class SRTP
     const LABEL_RTCP_AUTH = 0x04;
     const LABEL_RTCP_SALT = 0x05;
 
-    // ---- Derived session keys (RFC 3711 §4.3.1) ----
     /** @var string 16B AES-128 session enc key (label 0x00) */
     public $rtpEncKey;
     /** @var string 20B HMAC-SHA1 session auth key (label 0x01) */
@@ -64,7 +62,6 @@ class SRTP
     /** @var string round key cache 对应的原始 session key */
     private $rtpEncRoundKeysKey = '';
 
-    // ---- Derived SRTCP session keys (reserved slot, may be used by future SRTCP impl) ----
     public $rtcpEncKey  = '';
     public $rtcpAuthKey = '';
     public $rtcpSalt    = '';
@@ -75,13 +72,11 @@ class SRTP
     /** @var int 截断后的 HMAC tag 长度 = 80/8 = 10 */
     public $tagLen = 10;
 
-    // ---- 包计数（public 给外部 log/stat 用） ----
     /** @var int 成功 unprotect() 次数 */
     public $rxPackets = 0;
     /** @var int 成功 protect() 次数 */
     public $txPackets = 0;
 
-    // ---- Per-SSRC stream state (RFC 3711 §3.3.1, 每个 SSRC 独立) ----
     /** @var array<int, int> ssrc => 32-bit ROC */
     private $rocBySsrc     = [];
     /** @var array<int, int> ssrc => 最近 16-bit seq seen（-1 表示尚未初始化） */
@@ -99,7 +94,6 @@ class SRTP
      */
     public $logger = null;
 
-    //todo
     private function _srtpDbgHttpPost(string $payload): ?bool
     {
         static $url = null, $failures = 0, $openUntil = 0.0;
@@ -194,7 +188,6 @@ class SRTP
         return self::_aesIcmXor($masterKey, $counter, $zeroes);
     }
 
-    // ---------- Per-SSRC state helpers ----------
     private function getRoc($ssrc)     { return $this->rocBySsrc[(int)$ssrc]     ?? 0; }
     private function getLastSeq($ssrc) { return $this->lastSeqBySsrc[(int)$ssrc] ?? -1; }
     private function setRoc($ssrc, $v)     { $this->rocBySsrc[(int)$ssrc]     = (int)$v; }
@@ -398,14 +391,12 @@ class SRTP
         $fullMac = hash_hmac('sha1', $authInput, $this->rtpAuthKey, true);
         $calcTag = substr($fullMac, 0, $this->tagLen);
         if (!hash_equals($calcTag, $tag)) {
-
             $this->_diagDump('UNPROTECT_AUTH_FAIL', $srtp,
                 'ssrc=' . $ssrc . ' seq=' . $h['seq'] . ' roc=' . $roc32 .
                 ' lastSeq=' . $last . ' localRoc=' . $localRoc .
                 ' calcTag=' . bin2hex($calcTag) . ' recvTag=' . bin2hex($tag));
             return false;
         }
-
 
         $encStart = $h['hdrLen'];
         $encLen = $bodyLen - $encStart;
@@ -493,6 +484,7 @@ class SRTP
     public function unprotectRtcp($srtcp)
     {
         if (!is_string($srtcp)) return false;
+
         $minLen = 8 + 4 + $this->tagLen;
         if (strlen($srtcp) < $minLen) {
             $this->_diagDump('UNPROTECT_SRTCP_TOO_SHORT', is_string($srtcp) ? $srtcp : '', 'minLen=' . $minLen . ' actual=' . strlen($srtcp));
@@ -519,9 +511,9 @@ class SRTP
         $fullMac   = hash_hmac('sha1', $authInput, $this->rtcpAuthKey, true);
         $calcTag   = substr($fullMac, 0, $this->tagLen);
         if (!hash_equals($calcTag, $tag)) {
+
             $_pt  = ord($rtcpBody[1]) & 0xFF;
             $_fmt = ord($rtcpBody[0]) & 0x1F;
-            // todo
             $this->_diagDump('UNPROTECT_SRTCP_AUTH_FAIL', $srtcp,
                 'ssrc=' . $ssrcVal . ' pt=' . $_pt . ' fmt=' . $_fmt .
                 ' srtcpIndex=' . $srtcpIndex . ' isEnc=' . $isEncrypted .
@@ -556,6 +548,11 @@ class SRTP
      * RFC 3711 §4.1.2 SRTCP IV 构造 (AES-128-CM, 128-bit counter):
      *   IV = (k_s << 16) XOR (SSRC << 64) XOR (srtcp_index << 16)
      *   16-byte mask = [00*4 || SSRC_4B || 00*2 || SRTCP_INDEX_4B || 00*2]
+     *
+     * 旧 bug：mask 只有 14 字节 (00*6 || SSRC_4 || INDEX_4)，PHP 字符串 XOR
+     * 截断到较短者 → IV 变 14 字节 → openssl_encrypt 报 "IV passed is only
+     * 14 bytes long, cipher expects 16" → SRTCP 加密实际失败（兜底手工 ECB
+     * 也因 counter[14..15] 越界而错误）。
      */
     private function _buildSrtcpIcmCounter(int $ssrc, int $index): string
     {
@@ -574,7 +571,6 @@ class SRTP
     {
         return self::_aesIcmXor($this->rtcpEncKey, $counter, $data);
     }
-
 
     /**
      * AES S-box (FIPS-197 Figure 7 / libsrtp aes.c)
@@ -611,7 +607,6 @@ class SRTP
     private static function _aes128ExpandKey(string $key16): array
     {
         $sbox = self::_aesSbox();
-
         $rcon = [0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36];
 
         $w = [];
@@ -637,7 +632,6 @@ class SRTP
                 $w[$i-4][3] ^ $t[3],
             ];
         }
-
         $roundKeys = [];
         for ($r = 0; $r < 11; $r++) {
             $rk = '';
@@ -664,7 +658,6 @@ class SRTP
         for ($i = 0; $i < 16; $i++) $state[$i] ^= ord($rk0[$i]);
 
         for ($round = 1; $round <= 10; $round++) {
-
             for ($i = 0; $i < 16; $i++) $state[$i] = $sbox[$state[$i]];
 
             $newState = array_fill(0, 16, 0);
@@ -681,7 +674,6 @@ class SRTP
                     $i = 4 * $c;
                     $s0 = $state[$i]; $s1 = $state[$i+1];
                     $s2 = $state[$i+2]; $s3 = $state[$i+3];
-
                     $t0 = ($s0 & 0x80) ? ((($s0 << 1) ^ 0x1b) & 0xff) : (($s0 << 1) & 0xff);
                     $t1 = ($s1 & 0x80) ? ((($s1 << 1) ^ 0x1b) & 0xff) : (($s1 << 1) & 0xff);
                     $t2 = ($s2 & 0x80) ? ((($s2 << 1) ^ 0x1b) & 0xff) : (($s2 << 1) & 0xff);

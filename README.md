@@ -1,39 +1,43 @@
 # WebRTC SDK for PHP
 
-一个基于 PHP >= 7.3.9 原生 socket 实现的轻量级 WebRTC SFU（Selective Forwarding Unit）服务器。
-采用单进程异步事件循环，内置 WebSocket 信令、STUN、DTLS、SCTP（DataChannel）和 SRTP 音视频转发；不依赖第三方 Composer 运行时包。
-支持通过事件回调无侵入扩展业务逻辑，无需修改 SDK 核心代码即可实现多房间、鉴权、计费、聊天广播、自定义信令等能力。
+<p align="center">
+  <a href="./README.cn.md"><strong>🇨🇳 中文</strong></a> •
+  <a href="./README.md"><strong>🇬🇧 English</strong></a>
+</p>
+
+A lightweight WebRTC SFU (Selective Forwarding Unit) server built on PHP >= 7.3.9 native sockets.
+It uses a single‑process asynchronous event loop, with built‑in WebSocket signaling, STUN, DTLS, SCTP (DataChannel) and SRTP audio/video forwarding; no third‑party Composer runtime packages are required.
+Business logic can be extended non‑invasively through event callbacks – multi‑room, authentication, billing, chat broadcasting, custom signaling and more can be implemented without modifying the SDK core code.
 
 ---
 
-## 特性
+## Features
 
-| 能力 | 说明                                                                                                |
-|---|---------------------------------------------------------------------------------------------------|
-| WebSocket 信令服务 | 内置独立的 HTTP/WS 服务 (默认 8088 端口)，自带静态文件托管                                                            |
-| STUN / ICE | 独立 STUN Binding 服务默认监听 3478；WebRTC 媒体端口上的 ICE Binding Response 包含 MESSAGE-INTEGRITY 和 FINGERPRINT |
-| DTLS 握手 | RFC 6347 / RFC 5764（DTLS-SRTP），内置证书，SRTP 主密钥自动协商派生                                                |
-| SRTP 协议 | AES-128-ICM 加密、HMAC-SHA1-80 认证、ROC 和重复包防护                                                         |
-| SCTP DataChannel | PPID=51 文本 / 53 二进制 / 56/57 部分可靠流 (onmessage 回调)                                                  |
-| SFU 媒体转发 | SSRC 自动重写 + 多订阅者分发，push 端一路推流 -> 多路 play 端观看                                                      |
-| 事件驱动接口 | 提供连接、信令、Publisher、Subscriber、RTP 和 DataChannel 等回调；部分前置事件可通过 `&$handled` 接管默认处理                   |
-| 元数据管理 | Client 级 KV metadata，房间 / 角色 / 并发限制等业务字段自由扩展                                                      |
-| 无第三方运行时包 | 使用 PHP 的 `openssl`、`json`、 `sockets` 扩展                                                           |
-
+| Capability | Description |
+|---|---|
+| WebSocket signaling service | Built‑in standalone HTTP/WS service (default port 8088) with static file hosting |
+| STUN / ICE | Standalone STUN Binding service listens on 3478 by default; ICE Binding Responses on the WebRTC media port include MESSAGE‑INTEGRITY and FINGERPRINT |
+| DTLS handshake | RFC 6347 / RFC 5764 (DTLS‑SRTP), built‑in certificate, automatic SRTP master key negotiation and derivation |
+| SRTP protocol | AES‑128‑ICM encryption, HMAC‑SHA1‑80 authentication, ROC and replay protection |
+| SCTP DataChannel | PPID=51 text / 53 binary / 56/57 partially reliable streams (onmessage callback) |
+| SFU media forwarding | Automatic SSRC rewriting + multi‑subscriber distribution; one push stream → many play viewers |
+| Event‑driven interface | Callbacks for connection, signaling, Publisher, Subscriber, RTP and DataChannel; selected pre‑events can take over the default behavior via `&$handled` |
+| Metadata management | Client‑level KV metadata, freely extensible with fields such as room, role, concurrency limit |
+| Zero runtime dependencies | Uses PHP extensions `openssl`, `json`, `sockets` |
 
 ---
 
-## 环境要求
+## Requirements
 
 - PHP **>= 7.3.9**
-- PHP 扩展：
+- PHP extensions:
   - `openssl`
   - `json`
   - `sockets`
 - Composer
-- 操作系统：Windows / Linux / macOS
+- Operating system: Windows / Linux / macOS
 
-安装依赖：
+Install via Composer:
 
 ```bash
 composer require xiaosongshu/webrtc
@@ -41,27 +45,28 @@ composer require xiaosongshu/webrtc
 
 ---
 
-## 端口与网络模型
+## Ports and network model
 
-| 端口 | 协议 | 作用 | 公网部署方式 |
+| Port | Protocol | Purpose | Public deployment |
 |---|---|---|---|
-| `8088` | TCP (HTTP/WS) | 页面、WebSocket 信令、WHIP/WHEP HTTP API | 服务当前绑定 `0.0.0.0`；公网部署时用防火墙限制，仅允许 Nginx 访问 |
-| `8089` | UDP | ICE、DTLS、SRTP/SRTCP、RTP/RTCP 媒体 | 必须让客户端直接访问，普通 Nginx HTTP 代理不能转发 |
-| `3478` | UDP | 可选的独立 STUN Binding 服务 | 使用该服务时直接开放 |
+| `8088` | TCP (HTTP/WS) | Pages, WebSocket signaling, WHIP/WHEP HTTP API | Service binds `0.0.0.0`; restrict with firewall so only Nginx can access it in production |
+| `8089` | UDP | ICE, DTLS, SRTP/SRTCP, RTP/RTCP media | Must be directly reachable by clients; a regular Nginx HTTP proxy cannot forward it |
+| `3478` | UDP | Optional standalone STUN Binding service | Open to the public when this service is used |
 
-浏览器或 OBS 首先通过 HTTP/WebSocket 完成信令和 SDP 协商，随后根据 SDP candidate 直接连接 `服务器IP:8089/UDP`。HTTPS 代理成功并不代表媒体端口已经连通。
+Browsers or OBS first complete signaling and SDP negotiation via HTTP/WebSocket, then connect directly to `serverIP:8089/UDP` based on the SDP candidates. A successful HTTPS proxy does **not** mean the media port is reachable.
 
 ---
 
-## 本地部署
+## Local deployment
 
-源码仓库根目录提供 `start.php` 以及 `index.html`、`push.html`、`play.html`、`whip.html`、`whep.html` 示例页面。通过 Composer 安装时，可参考仓库中的 `start.php` 在业务项目创建启动入口；服务器默认读取 SDK 包根目录中的示例静态文件，仅复制 `start.php` 不会改变静态文件目录。
+The repository root provides `start.php` together with demo pages `index.html`, `push.html`, `play.html`, `whip.html`, `whep.html`.  
+When installing via Composer, you can copy the structure of `start.php` from the repo to create your own entry point; the server reads the sample static files from the SDK package root by default. Simply copying `start.php` does not change the static file directory.
 
-### 1. 启动服务
-```powershell
+### 1. Start the service
+```bash
 php start.php
 ```
-启动成功后会看到类似输出：
+A successful start will show output similar to:
 
 ```text
 Using certificate: .../src/Core/certs/server.crt
@@ -70,86 +75,87 @@ UDP media server listening on udp://0.0.0.0:8089
 STUN server listening on udp://0.0.0.0:3478
 ```
 
-### 2. 本地推流和拉流
+### 2. Local publishing and playback
 
-| 页面/API     | 地址                                      | 用途                  |
-|------------|-----------------------------------------|---------------------|
-| WebSocket 推流 | `http://127.0.0.1:8088/index.html`      | 浏览器datachannel演示    |
-| WebSocket 推流 | `http://127.0.0.1:8088/push.html`       | 浏览器屏幕/窗口推流          |
-| WebSocket 拉流 | `http://127.0.0.1:8088/play.html`       | 播放相同 `streamId` 的媒体 |
-| WHIP 推流    | `http://127.0.0.1:8088/whip.html`       | 浏览器通过 WHIP 推流       |
-| WHEP 拉流    | `http://127.0.0.1:8088/whep.html`       | 浏览器通过 WHEP 拉流       |
-| OBS WHIP   | `http://127.0.0.1:8088/whip/stream_001` | OBS 的 WHIP 服务地址     |
+| Page / API | URL | Purpose |
+|---|---|---|
+| WebSocket publish | `http://127.0.0.1:8088/index.html` | Browser DataChannel demo |
+| WebSocket publish | `http://127.0.0.1:8088/push.html` | Browser screen/window publishing |
+| WebSocket playback | `http://127.0.0.1:8088/play.html` | Play media for the same `streamId` |
+| WHIP publish | `http://127.0.0.1:8088/whip.html` | Browser publishing via WHIP |
+| WHEP playback | `http://127.0.0.1:8088/whep.html` | Browser playback via WHEP |
+| OBS WHIP | `http://127.0.0.1:8088/whip/stream_001` | WHIP service address for OBS |
 
-推流端与拉流端必须使用相同的 `streamId`。示例默认使用 `stream_001`。
+The publisher and the subscriber must use the same `streamId`. The examples default to `stream_001`.
 
-`push.html`、`play.html` 和首页会根据当前页面地址自动选择 `ws://`；`whip.html`、`whep.html` 会自动使用当前页面的同源 HTTP 地址，因此本地运行无需修改页面配置。
+`push.html`, `play.html` and the home page automatically select `ws://` based on the current page URL; `whip.html` and `whep.html` use the same‑origin HTTP address of the current page, so no manual configuration is needed for local testing.
 
 ---
 
-## WHIP / WHEP HTTP 接口
+## WHIP / WHEP HTTP API
 
-项目提供 WHIP/WHEP 风格的 SDP POST 和资源删除接口，已配套仓库示例页面，并可供 OBS 使用 WHIP 推流。当前 Trickle ICE 候选接口采用项目自定义的 JSON POST 路径，并非 IETF 标准的 SDP fragment PATCH；接入其他客户端前请核对其请求格式。
+The project provides WHIP/WHEP‑style SDP POST and resource deletion endpoints, accompanied by demo pages in the repository, and can be used by OBS for WHIP publishing.  
+The current Trickle ICE candidate endpoint uses a custom JSON POST path rather than the IETF standard SDP fragment PATCH; please check the request format before integrating other clients.
 
-### WHIP 推流
+### WHIP publishing
 
-**创建请求**：
+**Create request**:
 
 ```http
 POST /whip/<streamId> HTTP/1.1
 Content-Type: application/sdp
 
-<整个 SDP offer 文本>
+<entire SDP offer text>
 ```
 
-**成功响应**：
+**Success response**:
 
 ```http
 HTTP/1.1 201 Created
 Location: /whip/<resourceId>
 Content-Type: application/sdp
 
-<服务端 SDP answer>
+<server SDP answer>
 ```
 
-- `streamId` 是业务定义的流标识，例如 `stream_001`。
-- 当前 `resourceId` 是服务端生成的数字 clientId。
-- 停止推流时向响应中的相对 `Location` 发送 `DELETE`，成功返回 `204 No Content`：
+- `streamId` is the business‑defined stream identifier, e.g. `stream_001`.
+- Currently `resourceId` is the server‑generated numeric clientId.
+- To stop publishing, send `DELETE` to the relative `Location` from the response; success returns `204 No Content`:
 
 ```http
 DELETE /whip/<resourceId> HTTP/1.1
 ```
 
-### WHEP 拉流
+### WHEP playback
 
-**创建请求**：
+**Create request**:
 
 ```http
 POST /whep/<streamId> HTTP/1.1
 Content-Type: application/sdp
 
-<整个 SDP offer 文本>
+<entire SDP offer text>
 ```
 
-**成功响应**：
+**Success response**:
 
 ```http
 HTTP/1.1 201 Created
 Location: /whep/<resourceId>
 Content-Type: application/sdp
 
-<服务端 SDP answer>
+<server SDP answer>
 ```
 
-必须先存在相同 `streamId` 的 Publisher；否则立即返回 `404 Not Found`，响应正文为 `Stream not available`。停止拉流使用：
+A Publisher with the same `streamId` must already exist; otherwise a `404 Not Found` is returned immediately with body `Stream not available`. Stop playback using:
 
 ```http
 DELETE /whep/<resourceId> HTTP/1.1
 ```
 
-### Trickle ICE 候选
+### Trickle ICE candidates
 
-当前候选接口接受以下项目自定义请求，成功返回 `204 No Content`：
+The current candidate endpoint accepts the following custom request; success returns `204 No Content`:
 
 ```http
 POST /whip/<resourceId>/candidate HTTP/1.1
@@ -158,19 +164,21 @@ Content-Type: application/json
 {"candidate":"candidate:..."}
 ```
 
-WHEP 对应路径为 `/whep/<resourceId>/candidate`；服务端也接受将最后一段 `candidate` 写为 `ice`。仓库中的 `whip.html` 使用上述 JSON POST 接口。
+The WHEP path is `/whep/<resourceId>/candidate`; the server also accepts replacing the final segment `candidate` with `ice`. `whip.html` in the repository uses the JSON POST interface described above.
 
-## 公网线上部署（推荐 Nginx）
+---
 
-生产环境建议保持职责分离：
+## Public online deployment (recommended: Nginx)
 
-- **Nginx**：域名、HTTPS 证书、WSS、静态页面及 WHIP/WHEP HTTP 反向代理。
-- **WebRTCServer**：SDP、ICE/STUN、DTLS、SRTP/SRTCP 和 RTP/RTCP 转发。
-- **UDP 8089**：客户端直接连接 WebRTCServer，不经过普通 Nginx `proxy_pass`。
+Keep responsibilities separated in production:
 
-### 1. 设置 SDP 对外公布的公网 IP
+- **Nginx**: domain name, HTTPS certificate, WSS, static pages and WHIP/WHEP HTTP reverse proxy.
+- **WebRTCServer**: SDP, ICE/STUN, DTLS, SRTP/SRTCP and RTP/RTCP forwarding.
+- **UDP 8089**: clients connect directly to WebRTCServer; do **not** pass it through a regular Nginx `proxy_pass`.
 
-SDP candidate 使用 `WebRTCServer::getLocalIP()` 返回的地址。服务器网卡直接绑定公网 IPv4 时通常无需处理；云主机通过 NAT 使用公网 IP 时，在业务启动文件中继承服务器类即可，无需修改 SDK 核心：
+### 1. Set the public IP announced in SDP
+
+SDP candidates use the address returned by `WebRTCServer::getLocalIP()`. If the server NIC is directly bound to a public IPv4 address, usually no changes are needed. When a cloud host is behind NAT and uses a public IP, create a subclass of the server in your bootstrap file – no need to modify the SDK core:
 
 ```php
 <?php
@@ -179,33 +187,27 @@ use Xiaosongshu\Webrtc\WebRTCServer;
 
 require_once __DIR__ . '/vendor/autoload.php';
 
-class PublicWebRTCServer extends WebRTCServer
-{
-    public function getLocalIP()
-    {
-        // 替换为服务器公网 IPv4，也可贴合自己的业务需求自由实现
-        return '203.0.113.10';
-    }
-}
-
-$server = new PublicWebRTCServer(
+$server = new WebRTCServer(
     8088,
     8089,
     3478,
     __DIR__ . '/debug.log'
 );
-
-// 在这里注册 onJoin、onPublisher、onSubscriber 等业务回调。
+// Replace with your server's public IPv4 address. Not required for local testing.
+$server->publicIp = '127.0.0.1';
+// Enable debug mode (set to false in production)
+$server->isDev = false;
+// Start the service – code after this line will not execute
 $server->start();
 ```
 
-公网 NAT 必须把 `8089/UDP` 映射到服务器同一端口。当前 SDP 默认公布端口 `8089`，如果公网端口与内网端口不同，需要同步调整服务端 UDP 端口配置。
+Public NAT must map `8089/UDP` to the same port on the server. The SDP currently announces port `8089` by default; if the public port differs from the internal port, adjust the server's UDP port configuration accordingly.
 
-### 2. 配置域名和 HTTPS 证书
+### 2. Configure domain name and HTTPS certificate
 
-不要求购买商业证书，可以使用 Let's Encrypt 或其他受浏览器信任的 CA 证书。公网浏览器采集摄像头、麦克风或屏幕通常要求 HTTPS 安全上下文。
+Commercial certificates are not required; you can use Let's Encrypt or any CA certificate trusted by browsers. Browsers usually require an HTTPS secure context for camera, microphone or screen capture.
 
-以下配置放在 Nginx `http` 配置范围内：
+Place the following configuration in the Nginx `http` block:
 
 ```nginx
 map $http_upgrade $connection_upgrade {
@@ -244,7 +246,7 @@ server {
 }
 ```
 
-该配置将页面、WebSocket、WHIP 和 WHEP 都代理到本机 `8088/TCP`。示例页面会自动使用：
+This proxies pages, WebSocket, WHIP and WHEP to the local `8088/TCP`. The demo pages will automatically use:
 
 ```text
 wss://webrtc.example.com
@@ -252,103 +254,103 @@ https://webrtc.example.com/whip/stream_001
 https://webrtc.example.com/whep/stream_001
 ```
 
-OBS 的服务类型选择 WHIP，服务地址填写：
+In OBS, choose WHIP as the service type and enter:
 
 ```text
 https://webrtc.example.com/whip/stream_001
 ```
 
-WHIP/WHEP 返回的资源 `Location` 使用相对 URL，可继续通过同一域名访问和删除。
+WHIP/WHEP responses use relative URLs for the `Location` header, so the same domain can be used for access and deletion.
 
-### 3. 配置防火墙和云安全组
+### 3. Configure firewall and cloud security groups
 
-至少放行：
+At a minimum, allow:
 
-| 规则 | 来源 | 说明 |
+| Rule | Source | Description |
 |---|---|---|
-| `80/TCP` | 公网 | 可选，仅用于跳转 HTTPS |
-| `443/TCP` | 公网 | HTTPS、WSS、WHIP、WHEP |
-| `8089/UDP` | 公网 | WebRTC 媒体，必须开放 |
-| `3478/UDP` | 公网 | 仅在使用内置独立 STUN 时开放 |
-| `8088/TCP` | 本机 | Nginx 到 PHP 服务；不建议直接向公网开放 |
+| `80/TCP` | Public | Optional, only for HTTPS redirect |
+| `443/TCP` | Public | HTTPS, WSS, WHIP, WHEP |
+| `8089/UDP` | Public | WebRTC media – must be open |
+| `3478/UDP` | Public | Only when using the built‑in standalone STUN service |
+| `8088/TCP` | Localhost | Nginx → PHP service; do **not** expose directly to the public |
 
-如果服务器位于路由器、容器或云 NAT 后面，还必须配置 `8089/UDP` 端口映射，并确保 `getLocalIP()` 返回外部客户端实际可达的 IPv4。
+If the server sits behind a router, container or cloud NAT, you must also configure port mapping for `8089/UDP` and ensure `getLocalIP()` returns an IPv4 address that is actually reachable by external clients.
 
-### 4. HTTPS 证书与 DTLS 证书的区别
+### 4. HTTPS certificate vs. DTLS certificate
 
-Nginx HTTPS 证书用于保护页面、WebSocket 和 WHIP/WHEP HTTP 请求；项目内置 DTLS 证书用于 WebRTC 媒体密钥协商。服务端将该证书的 SHA-256 fingerprint 写入 SDP，由 WebRTC 客户端验证服务端证书。两者用途不同，使用 Nginx 后仍需保留项目的 DTLS 证书和指纹逻辑。
+The Nginx HTTPS certificate secures pages, WebSocket and WHIP/WHEP HTTP requests. The built‑in DTLS certificate is used for WebRTC media key negotiation; the server writes the SHA‑256 fingerprint of this certificate into the SDP, and the WebRTC client verifies the server certificate against that fingerprint. The two certificates serve different purposes – even when Nginx is used, the project's DTLS certificate and fingerprint logic must be preserved.
 
-### 5. TURN 说明
+### 5. About TURN
 
-Nginx 不是 TURN 服务。服务器拥有公网可达的 `8089/UDP` 时，多数客户端可以直接建立连接；如果客户端处于严格企业防火墙、对称 NAT 或禁止 UDP 的网络，需要另行部署 TURN，并在客户端 `RTCPeerConnection` 的 `iceServers` 中配置，不能依靠 Nginx HTTP 代理解决。
+Nginx is **not** a TURN service. When the server has a publicly reachable `8089/UDP`, most clients can establish a direct connection. If clients are behind strict enterprise firewalls, symmetric NAT, or networks that block UDP, you need to deploy a separate TURN server and configure its address in the `iceServers` of the client's `RTCPeerConnection`. A Nginx HTTP proxy cannot solve this.
 
 ---
 
-## 推流 / 拉流默认信令协议
+## Default signaling protocol for publishing / playback
 
-`push.html` 与 `play.html` 均通过 WebSocket 发送 JSON 文本消息与服务端通信。
+Both `push.html` and `play.html` communicate with the server via WebSocket JSON text messages.
 
-### 1) join（进入房间）
+### 1) join (enter a room)
 
-推流端：
+Publisher:
 ```json
 { "type": "join", "role": "push", "streamId": "ROOM123" }
 ```
-拉流端：
+Subscriber:
 ```json
 { "type": "join", "role": "play", "streamId": "ROOM123" }
 ```
 
-服务端默认回：
+Server responds by default with:
 ```json
 { "type": "joined" }
 ```
 
-### 2) offer（SDP 协商）
+### 2) offer (SDP negotiation)
 
-- **push.html（推流端）**：浏览器 offerer → 服务端 answerer
-- **play.html（拉流端）**：服务端 offerer → 浏览器 answerer（缺省 SFU 自动由 `makeSfuOfferForSubscriber()` 生成）
+- **push.html (publisher)**: browser offerer → server answerer
+- **play.html (subscriber)**: server offerer → browser answerer (the default SFU automatically generates the offer via `makeSfuOfferForSubscriber()`)
 
-### 3) candidate（ICE 候选地址）
+### 3) candidate (ICE candidate addresses)
 
-服务端缺省：把 push 端的 candidate 转发给同 streamId 的所有 play 端；play 端的 candidate 只转发给对应的 push 端，无需额外业务代码。
+Default server behavior: forward the publisher's candidates to all play clients in the same `streamId`; forward a play client's candidates only to the corresponding publisher. No extra business code is required.
 
-当前 WebSocket 信令没有固定 path；`8088` 上任意 URL 的有效 WebSocket Upgrade 都进入同一信令处理器。
+The current WebSocket signaling does not have a fixed path; any valid WebSocket Upgrade on `8088` reaches the same signaling handler.
 
 ---
 
-## 事件接口（无侵入扩展）
+## Event interface (non‑invasive extension)
 
-**核心设计思想**：通过回调扩展业务；其中部分信令前置事件支持可选的 `&$handled` 引用参数，具体以事件表为准：
-- 支持 `&$handled` 的回调中不设置 `true` → 继续执行 SDK 的缺省处理
-- 设置 `$handled=true` → 跳过该事件对应的缺省处理，由业务代码接管
+**Core design idea**: extend business logic through callbacks. Selected signaling pre‑events support an optional `&$handled` reference parameter (see the event table for details):
+- Do **not** set `$handled = true` in a callback that supports it → the SDK continues with its default behavior.
+- Set `$handled = true` → the default handling for that event is skipped, and your business code takes full control.
 
-### 事件总览
+### Event overview
 
-| 事件属性 | 触发时机 | 签名 | 是否支持 &$handled |
+| Event property | When it fires | Signature | Supports &$handled |
 |---|---|---|---|
-| `$onOpen` | TCP/HTTP 连接 accept 时触发；收到 DataChannel CHANNEL_OPEN 后还会以 channel label 再次触发 | `fn(mixed $label, int $clientId, WebRTCServer $srv):void` | 否 |
-| `$onSignaling` | 任何 WebSocket 信令到达，全局前置钩子 | `fn(int $id, array $msg, WebRTCServer $srv, &$handled):void` | **是** |
-| `$onJoin` | 收到 `join` 信令 | `fn(int $id, array $msg, WebRTCServer $srv, &$handled):void` | **是** |
-| `$onOffer` | Offer 已生成 Answer；WS 流程中已回发，HTTP 流程中尚未写出响应 | `fn(int $id, string $offerSdp, string $answerSdp, WebRTCServer $srv):void` | 否 |
-| `$onPublisher` | onOffer 后若 metadata.role==='push'，Publisher 就绪 | `fn(int $id, array $ctx, WebRTCServer $srv):void` | 否 |
-| `$onSubscriber` | WebSocket `role=play` 客户端 join 且已找到同流 Publisher 后触发；HTTP WHEP 不触发 | `fn(int $id, array $ctx, WebRTCServer $srv):void` | 否 |
-| `$onAnswer` | 客户端发来 answer（通常 play 端） | `fn(int $id, string $answerSdp, WebRTCServer $srv, &$handled):void` | **是** |
-| `$onCandidate` | ICE candidate 到达 | `fn(int $id, array $msg, WebRTCServer $srv, &$handled):void` | **是** |
-| `$onMediaConnected` | 首个 SRTP RTP 包成功 unprotect（媒体首帧落地） | `fn(int $id, array $rtpHeader, WebRTCServer $srv):void` | 否 |
-| `$onRtp` | 收到并成功解密明文 RTP；注册后由业务处理该包 | `fn(int $id, string $plainRtp, array $header, WebRTCServer $srv):void` | 否 |
-| `$onmessage` | 收到 SCTP DataChannel 文本或二进制消息 | `fn(string $data, int $clientId, WebRTCServer $srv):void` | 否 |
-| `$onLeave` | `removeClient()` 中的业务离开回调 | `fn(int $clientId, WebRTCServer $srv):void` | 否 |
-| `$onClose` | 底层连接关闭回调 | `fn(int $clientId, WebRTCServer $srv):void` | 否 |
+| `$onOpen` | When a TCP/HTTP connection is accepted; also fires again with the channel label after receiving a DataChannel CHANNEL_OPEN | `fn(mixed $label, int $clientId, WebRTCServer $srv):void` | No |
+| `$onSignaling` | Any WebSocket signaling message arrives, global pre‑hook | `fn(int $id, array $msg, WebRTCServer $srv, &$handled):void` | **Yes** |
+| `$onJoin` | A `join` message is received | `fn(int $id, array $msg, WebRTCServer $srv, &$handled):void` | **Yes** |
+| `$onOffer` | An Answer has been generated for an Offer; already sent back in WS flow, not yet written to the response in HTTP flow | `fn(int $id, string $offerSdp, string $answerSdp, WebRTCServer $srv):void` | No |
+| `$onPublisher` | After onOffer, if metadata.role==='push', Publisher is ready | `fn(int $id, array $ctx, WebRTCServer $srv):void` | No |
+| `$onSubscriber` | WebSocket `role=play` client joined and a Publisher for the same stream was found; HTTP WHEP does not trigger this | `fn(int $id, array $ctx, WebRTCServer $srv):void` | No |
+| `$onAnswer` | Client sends an answer (typically a play client) | `fn(int $id, string $answerSdp, WebRTCServer $srv, &$handled):void` | **Yes** |
+| `$onCandidate` | An ICE candidate arrives | `fn(int $id, array $msg, WebRTCServer $srv, &$handled):void` | **Yes** |
+| `$onMediaConnected` | The first SRTP RTP packet is successfully unprotected (first media frame landed) | `fn(int $id, array $rtpHeader, WebRTCServer $srv):void` | No |
+| `$onRtp` | A plaintext RTP packet is received and decrypted successfully; when registered, the business handles the packet | `fn(int $id, string $plainRtp, array $header, WebRTCServer $srv):void` | No |
+| `$onmessage` | SCTP DataChannel text or binary message received | `fn(string $data, int $clientId, WebRTCServer $srv):void` | No |
+| `$onLeave` | Business leave callback inside `removeClient()` | `fn(int $clientId, WebRTCServer $srv):void` | No |
+| `$onClose` | Underlying connection closed callback | `fn(int $clientId, WebRTCServer $srv):void` | No |
 
-### 上下文 $ctx 字段说明
+### Context `$ctx` field descriptions
 
 - **onPublisher** `$ctx`:
   ```php
   [
       'streamId'   => (string),
-      'localSsrc'  => ['video' => int, 'audio' => int],  // SDK 发给远端的 SSRC
-      'videoPTs'   => [int => array], // PT => rtpmap/codec/clock/fmtp 等信息
+      'localSsrc'  => ['video' => int, 'audio' => int],  // SSRCs sent by the SDK to the remote side
+      'videoPTs'   => [int => array], // PT => rtpmap / codec / clock / fmtp, etc.
       'audioPTs'   => [int => array],
   ]
   ```
@@ -356,27 +358,27 @@ Nginx 不是 TURN 服务。服务器拥有公网可达的 `8089/UDP` 时，多�
   ```php
   [
       'streamId'     => (string),
-      'pushClientId' => int  // 同 streamId 当前 push 端 clientId；不存在时不触发回调
+      'pushClientId' => int  // clientId of the current publisher for this streamId; callback does not fire if none exists
   ]
   ```
 - **onMediaConnected** `$rtpHeader`:
   ```php
   [
       'pt' => int,          // RTP Payload Type
-      'seq' => int,         // 序列号
+      'seq' => int,         // Sequence number
       'ts' => int,          // RTP timestamp
-      'ssrc' => int,        // 同步源
-      'payloadLen' => int,  // RTP 载荷长度 (不含头)
+      'ssrc' => int,        // Synchronization source
+      'payloadLen' => int,  // RTP payload length (excluding header)
   ]
   ```
 
-### 使用示例：加入房间前鉴权
+### Usage example: authentication before joining a room
 
-`onJoin` 支持通过 `$handled` 阻止默认 join 流程，适合在写入 role、streamId 和生成 Subscriber Offer 前完成鉴权：
+`onJoin` supports preventing the default join flow via `$handled`, suitable for performing authentication before writing role, streamId and generating the Subscriber offer:
 
 ```php
 $verifyToken = function (string $token): bool {
-    // 替换为业务自己的数据库、Redis 或 JWT 校验。
+    // Replace with your own database, Redis, or JWT verification.
     return $token !== '';
 };
 
@@ -393,25 +395,25 @@ $server->onJoin = function (
     $handled = true;
     $srv->sendSignaling($clientId, [
         'type' => 'error',
-        'msg' => '鉴权失败',
+        'msg' => 'Authentication failed',
     ]);
 };
 ```
 
-并发上限应由业务根据压测结果配置；仓库不对固定订阅者数量作容量承诺。
+Concurrency limits should be configured by the business based on load testing results; the repository makes no capacity promise for a fixed number of subscribers.
 
-### 使用示例：私有加密信令
+### Usage example: private encrypted signaling
 
 ```php
 $server->onSignaling = function (int $id, array $msg, WebRTCServer $srv, &$handled) {
     $raw = $msg['_enc'] ?? null;
-    if ($raw === null) return; // 不是私有加密消息 → 走默认 JSON 协议
+    if ($raw === null) return; // Not a private encrypted message → use default JSON protocol
 
-    $secret = my_get_secret_for_client($id); // 业务自行实现
+    $secret = my_get_secret_for_client($id); // Implemented by the business
     $plain = my_aes_decrypt(base64_decode($raw), $secret);
     $realMsg = json_decode($plain, true);
 
-    // 业务自己处理 → 告诉 SDK 跳过默认
+    // Business handles it → tell the SDK to skip the default
     $handled = true;
     my_business_dispatch($id, $realMsg, $srv);
 };
@@ -419,80 +421,114 @@ $server->onSignaling = function (int $id, array $msg, WebRTCServer $srv, &$handl
 
 ---
 
-## 常用公共 API
+## Common public API
 
-### 客户端元数据
+### Client metadata
 
-| 方法 | 作用 |
+| Method | Purpose |
 |---|---|
-| `getClientIds(): array` | 返回当前所有 clientId |
-| `&getClientMeta(int $clientId, ?string $key=null, $default=null)` | 读取字段；`$key=null` 时按引用返回整个 metadata 数组 |
-| `setClientMeta(int $clientId, string $key, $value): bool` | 写入业务字段；clientId 不存在时返回 `false` |
-| `getClientsByMeta(string $key, $value=null): array` | 根据 metadata 筛选 clientId |
-| `getPublisherIdByStreamId(string $streamId): ?int` | 查找指定 streamId 下 role=push 的 clientId |
-| `getClientTrackInfo(int $clientId): array` | 获取客户端 PT 和本地 SSRC 映射 |
+| `getClientIds(): array` | Return all current clientIds |
+| `&getClientMeta(int $clientId, ?string $key=null, $default=null)` | Read a field; passing `null` for `$key` returns the entire metadata array by reference |
+| `setClientMeta(int $clientId, string $key, $value): bool` | Write a business field; returns `false` if the clientId does not exist |
+| `getClientsByMeta(string $key, $value=null): array` | Filter clientIds by metadata |
+| `getPublisherIdByStreamId(string $streamId): ?int` | Find the clientId with role=push for the given streamId |
+| `getClientTrackInfo(int $clientId): array` | Obtain client PT and local SSRC mappings |
 
-### 信令和 DataChannel
+### Signaling and DataChannel
 
-| 方法 | 作用 |
+| Method | Purpose |
 |---|---|
-| `sendSignaling(int $clientId, array $msg): bool` | WebSocket 发送 JSON 信令给一个客户端 |
-| `broadcastSignaling(array $clientIds, array $msg): int` | WebSocket 广播给多个客户端，返回成功数 |
-| `sendDataChannel(int $clientId, string $message, int $ppid=51, int $sid=0)` | 发送 DataChannel 消息；当前实现返回 bool，但未声明返回类型 |
-| `getClientsWithDataChannel(array $excludeIds=[]): array` | 返回 SCTP 已建立的客户端列表 |
-| `broadcastDataChannel(array $clientIds, string $message, int $ppid=51, int $sid=0): int` | 批量发送 DataChannel 消息，返回成功数 |
+| `sendSignaling(int $clientId, array $msg): bool` | Send a JSON signaling message to one client via WebSocket |
+| `broadcastSignaling(array $clientIds, array $msg): int` | Broadcast a signaling message to multiple clients; returns number of successes |
+| `sendDataChannel(int $clientId, string $message, int $ppid=51, int $sid=0)` | Send a DataChannel message; the current implementation returns bool but the return type is not declared |
+| `getClientsWithDataChannel(array $excludeIds=[]): array` | Return a list of clients with an established SCTP association |
+| `broadcastDataChannel(array $clientIds, string $message, int $ppid=51, int $sid=0): int` | Send a DataChannel message to multiple clients; returns number of successes |
 
-### SFU 订阅者 Offer 和媒体转发
+### SFU subscriber offer and media forwarding
 
-| 方法 | 作用 |
+| Method | Purpose |
 |---|---|
-| `makeSfuOfferForSubscriber(int $subscriberId, int $publisherId, string $setup='passive'): ?string` | 基于 Publisher Offer 生成 Subscriber 的 SFU Offer，默认让服务器作为 DTLS passive 端 |
-| `forwardRtpToClient(int $targetClientId, string $plainRtp, bool $ssrcRewrite=true): bool` | 将明文 RTP 重写并加密后发给指定客户端 |
-| `forwardRtpToAllSubscribers(string $streamId, string $plainRtp, int $excludeClientId=-1): int` | 给同 streamId 的所有 role=play 客户端分发，返回成功数 |
+| `makeSfuOfferForSubscriber(int $subscriberId, int $publisherId, string $setup='passive'): ?string` | Generate an SFU Offer for a subscriber based on the Publisher's Offer; defaults to the server acting as DTLS passive |
+| `forwardRtpToClient(int $targetClientId, string $plainRtp, bool $ssrcRewrite=true): bool` | Rewrite and encrypt a plaintext RTP packet, then send it to a specific client |
+| `forwardRtpToAllSubscribers(string $streamId, string $plainRtp, int $excludeClientId=-1): int` | Distribute to all role=play clients in the same streamId; returns number of successes |
 
 ---
 
-## 缺省 SFU 工作流程（零代码自动跑通）
+## Default SFU workflow (runs automatically with zero code)
 
-1. **push.html** 发送 `join(role=push, streamId=X)` → 服务端存 metadata
-2. **push.html** → `createOffer()` → `setLocalDescription(offer)` → 发送 `{"type":"offer","sdp":...}`
-3. **服务端 handleOffer()**
-   - 提取远端 `ice-ufrag / ice-pwd / setup`
-   - 调 `generateAnswerSDP()` 生成 answer，填好 `serverVideoSsrc / serverAudioSsrc / PT 表`
-   - 回发 answer → 触发 `onOffer` → 若 role=push → 触发 `onPublisher`
-4. **play.html** 发送 `join(role=play, streamId=X)` → `_fireSubscriberIfReady()`
-   - 若已有 pushClientId → **自动**调 `makeSfuOfferForSubscriber()` 生成 SFU offer
-   - `sendSignaling(['type'=>'offer','sdp'=>...])` 发送给 play.html
-5. **play.html** 收到 offer → `setRemoteDescription` → `createAnswer` → 回发 answer
-6. **服务端 handle answer** → 提取 play 的 `ice-ufrag/pwd` 给 STUN / DTLS
-7. **两端 ICE 连通 → DTLS 握手 → SRTP keys 导出**
-8. **push 端 UDP 收 RTP**：unprotect 成功 → `onMediaConnected` 触发 → `forwardRtpToAllSubscribers(streamId)` → 对每个 play 端：
-   - 按 play 端 PT 重写 SSRC 为 `serverVideoSsrc / serverAudioSsrc`（与步骤 4 发的 offer 中的 SSRC 严格一致）
-   - 用 play 端的 srtpTx protect → UDP send
-9. **play 端 SRTP 解密** → 浏览器 video/audio tag 自动渲染
+1. **push.html** sends `join(role=push, streamId=X)` → server stores metadata
+2. **push.html** → `createOffer()` → `setLocalDescription(offer)` → sends `{"type":"offer","sdp":...}`
+3. **Server handleOffer()**
+    - Extracts remote `ice-ufrag / ice-pwd / setup`
+    - Calls `generateAnswerSDP()` to produce an answer, filling `serverVideoSsrc / serverAudioSsrc / PT table`
+    - Sends back answer → fires `onOffer` → if role=push → fires `onPublisher`
+4. **play.html** sends `join(role=play, streamId=X)` → `_fireSubscriberIfReady()`
+    - If a pushClientId already exists → **automatically** calls `makeSfuOfferForSubscriber()` to generate an SFU offer
+    - `sendSignaling(['type'=>'offer','sdp'=>...])` is sent to play.html
+5. **play.html** receives the offer → `setRemoteDescription` → `createAnswer` → sends back answer
+6. **Server handles answer** → extracts play's `ice-ufrag/pwd` for STUN / DTLS
+7. **Both sides ICE connected → DTLS handshake → SRTP keys derived**
+8. **Publisher UDP receives RTP**: successful unprotect → `onMediaConnected` fires → `forwardRtpToAllSubscribers(streamId)` → for each play client:
+    - Rewrites SSRC to `serverVideoSsrc / serverAudioSsrc` according to the play client's PT (exactly matching the SSRC in the offer from step 4)
+    - Protects with the play client's srtpTx → sends via UDP
+9. **Play client SRTP decrypts** → browser renders video/audio tags automatically
+
+---
+
+## Frequently Asked Questions
+
+### Q1. Browser `setRemoteDescription` fails with "Failed to set remote offer sdp: Session error code: ERROR_CONTENT"
+
+First check the browser console for Offer/Answer messages and the `debug.log`. The current SFU Subscriber Offer uses the server's fixed support for H264/Opus and PT mapping. If your business requires other codecs, you should extend the SDP generation and RTP PT conversion logic, rather than only modifying the page SDP.
+
+### Q2. Publishing works, but the viewer sees a black screen / stuck at "negotiating media"
+
+Troubleshoot in this order:
+1. Check `debug.log` for `SRTP-IN ok` entries (= push media has reached the server).
+2. Look for `SFU forward streamId=xxx -> N subscriber(s)` (= subscriber forwarding is happening).
+3. In the play.html browser console, check for SDP offer/answer logs and whether the ICE connection state becomes `connected`.
+4. If play.html did not receive an offer → verify that the `streamId` used when joining matches the publisher's, and that `role` is `play`.
+
+### Q3. How do I deploy with HTTPS?
+
+Refer to the "Public online deployment (recommended: Nginx)" section above. The demo pages automatically choose `ws://` or `wss://` based on the current page protocol; you do not need to manually change JavaScript addresses. Important: Nginx only proxies `8088/TCP` – the media port `8089/UDP` must still be directly open to the public.
 
 ---
 
-## 常见问题
+## Known issues
 
-### Q1. 浏览器 `setRemoteDescription` 报错 "Failed to set remote offer sdp: Session error code: ERROR_CONTENT"
+- **Codec fixed to H.264 + Opus**  
+  For maximum compatibility with mainstream browsers, OBS, and common mobile devices, the server currently supports only H.264 video and Opus audio.  
+  If your business needs VP8, VP9, H.265 or other codecs, you must extend the SDP negotiation logic and RTP forwarding rules yourself.
 
-先检查浏览器控制台中的 Offer/Answer 和 `debug.log`。当前 SFU Subscriber Offer 使用服务端固定支持的 H264/Opus 和 PT 映射；如果业务需要其他编解码器，应先扩展 SDP 生成与 RTP PT 转换逻辑，而不是只改页面 SDP。
+- **OBS publishing may occasionally drop unexpectedly**  
+  Under high‑motion scenes or network fluctuations, OBS publishing may terminate.  
+  This is related to libwebrtc’s strict requirements on ICE consent, RTCP feedback and bandwidth estimation. Future versions will continue to optimize the ICE keep‑alive mechanism and RTCP REMB feedback to improve stability.  
+  **Temporary mitigation**: enable **CBR** rate control in OBS output settings and lower the video bitrate and resolution appropriately.
 
-### Q2. 推流正常，观众端黑屏 / 一直 "协商媒体中"
-
-按以下步骤排查：
-1. 看 `debug.log` 是否有 `SRTP-IN ok` 日志（= push 端媒体已到服务端）
-2. 看是否有 `SFU forward streamId=xxx -> N subscriber(s)`（= 订阅者转发）
-3. 看浏览器 play.html console 是否有 SDP offer / answer 日志，以及 ICE 连接状态是否变成 `connected`
-4. play.html 若未收到 offer → 检查 join 时 `streamId` 是否与 push 端一致，`role` 是否为 `play`
-
-### Q3. 如何用 HTTPS 部署？
-
-参见前文“公网线上部署（推荐 Nginx）”。示例页面已经根据当前页面协议自动选择同源 `ws://` 或 `wss://`，不需要手动修改 JavaScript 地址。需要特别注意：Nginx 只代理 `8088/TCP`，媒体 `8089/UDP` 仍须直接对公网开放。
+- **OBS encoder compatibility limitations**  
+  The following OBS H.264 encoders have been verified to publish successfully:
+    - `x264`
+    - `QuickSync H.264`
+    - `AMD HW H.264 (AVC)`  
+      These encoders work correctly under the `baseline`, `main` and `high` profiles.  
+      **Incompatible encoder**: `H264/AVC Encoder (AMD Advanced Media Framework)` – using this encoder may cause publishing failure or abnormal video.  
+      If you encounter issues with other encoders, switching to one of the above verified encoders is recommended.
 
 ---
+
+## Open source license & Disclaimer
+
+This project is open sourced under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0). You are free to use, modify and distribute it (including for commercial purposes).  
+The code is provided “AS IS”, without warranty of any kind, express or implied. The author shall not be liable for any damages arising from the use of this software.
 
 ## License
 
 Apache License 2.0
+
+---
+
+## 📧 Contact
+
+- 📬 Email: 2723659854@qq.com
+- 🐙 GitHub: [2723659854](https://github.com/2723659854)
