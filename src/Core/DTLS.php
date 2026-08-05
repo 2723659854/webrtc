@@ -1636,20 +1636,6 @@ trait DTLS
             && method_exists($this, 'kickFaststartForSubscriber')) {
             $this->kickFaststartForSubscriber((int)$clientId);
         }
-
-        static $_dbgDtlsReported = [];
-        if (empty($_dbgDtlsReported[$clientId])) {
-            $_dbgDtlsReported[$clientId] = true;
-            $_dbgClient = $this->clients[$clientId] ?? [];
-            $_dbgRc = $_dbgClient['remoteCandidate'] ?? [];
-            $_dbgEnv = @file_get_contents(dirname(__DIR__, 2) . '/.dbg/whep-zero-video.env');
-            preg_match('/^DEBUG_SERVER_URL=(.+)$/m', (string)$_dbgEnv, $_dbgUrlMatch);
-            $_dbgUrl = trim($_dbgUrlMatch[1] ?? 'http://127.0.0.1:7777/event');
-            $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'pre-fix','hypothesisId'=>'D','location'=>'src/Core/DTLS.php:handshake-complete','msg'=>'[DEBUG] DTLS complete SRTP and remote candidate','data'=>['clientId'=>(int)$clientId,'role'=>(string)($_dbgClient['meta']['role'] ?? ''),'streamId'=>(string)($_dbgClient['meta']['streamId'] ?? ''),'srtpKeyed'=>!empty($_dbgClient['srtpKeyed']),'srtpRx'=>!empty($_dbgClient['srtpRx']),'srtpTx'=>!empty($_dbgClient['srtpTx']),'remoteCandidate'=>['ip'=>(string)($_dbgRc['ip'] ?? ''),'port'=>(int)($_dbgRc['port'] ?? 0),'type'=>(string)($_dbgRc['_type'] ?? '')],'remoteCandidateValidated'=>!empty($_dbgClient['remoteCandidateValidated'])],'ts'=>(int)(microtime(true)*1000)]);
-            // todo
-            @file_get_contents($_dbgUrl, false, stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/json\r\n",'content'=>$_dbgPayload,'timeout'=>0.05,'ignore_errors'=>true]]));
-        }
-
         $this->_log_std("Client {$clientId} DTLS handshake completed!\n");
         $this->_log_std("Client {$clientId} WebRTC连接建立成功！\n");
     }

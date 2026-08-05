@@ -141,25 +141,6 @@ class WebRTCServer
         }
         $this->clients[$clientId]['_dbgOfferH264'] = $_dbgOfferH264;
         $this->clients[$clientId]['_dbgAnswerH264'] = $_dbgAnswerH264;
-        if ($role === 'push') {
-            $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'post-padding-k-l-m','hypothesisId'=>'M','location'=>'src/WebRTCServer.php:handleHttpOffer-whip-offer','msg'=>'[DEBUG] WHIP Offer H264 negotiation','data'=>['clientId'=>$clientId,'streamId'=>$streamId,'videoMLine'=>$_dbgOfferVideoMLine,'h264'=>$_dbgOfferH264],'ts'=>(int)(microtime(true)*1000)]);
-            $this->_dbgHttpPost($_dbgPayload);
-        } elseif ($role === 'play' && !empty($this->_sfuStreamConfig[$streamId]['_dbgActualProfileLevelId'])) {
-            static $_dbgProfileReported = [];
-            if (empty($_dbgProfileReported[$streamId])) {
-                $_dbgProfileReported[$streamId] = true;
-                $_dbgCfg = $this->_sfuStreamConfig[$streamId];
-                $_dbgCfgH264 = [];
-                foreach ((array)($_dbgCfg['videoPTs'] ?? []) as $_dbgCfgPt => $_dbgCfgPtInfo) {
-                    if (!is_array($_dbgCfgPtInfo)) continue;
-                    $_dbgCfgCodec = strtolower((string)($_dbgCfgPtInfo['codec'] ?? explode('/', (string)($_dbgCfgPtInfo['rtpmap'] ?? ''))[0]));
-                    if ($_dbgCfgCodec === 'h264') $_dbgCfgH264[] = ['pt'=>(int)$_dbgCfgPt,'rtpmap'=>(string)($_dbgCfgPtInfo['rtpmap'] ?? ''),'fmtp'=>(string)($_dbgCfgPtInfo['fmtp'] ?? '')];
-                }
-                $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'post-padding-k-l-m','hypothesisId'=>'M','location'=>'src/WebRTCServer.php:handleHttpOffer-whep-answer-profile','msg'=>'[DEBUG] H264 actual profile versus stream config and WHEP Answer','data'=>['streamId'=>$streamId,'publisherId'=>(int)($_dbgCfg['publisherId'] ?? 0),'subscriberId'=>$clientId,'actualProfileLevelId'=>(string)$_dbgCfg['_dbgActualProfileLevelId'],'streamConfigH264'=>$_dbgCfgH264,'whepAnswerH264'=>$_dbgAnswerH264],'ts'=>(int)(microtime(true)*1000)]);
-                $this->_dbgHttpPost($_dbgPayload);
-            }
-        }
-
         $this->clients[$clientId]['localIceUfrag'] = $localUfrag;
         $this->clients[$clientId]['localIcePwd']   = $localPwd;
         $this->clients[$clientId]['iceUfrag']      = $localUfrag;
@@ -650,30 +631,6 @@ class WebRTCServer
 
     private $_dbgMediaPerf = [];
 
-    private function _dbgHttpPost(string $payload, string $sessionId = 'whep-zero-video'): ?bool
-    {
-        static $urls = [], $failures = [], $openUntil = [];
-        $now = microtime(true);
-        if (($openUntil[$sessionId] ?? 0.0) > $now) return null;
-        if (!isset($urls[$sessionId])) {
-            $env = @file_get_contents(__DIR__ . '/../.dbg/' . $sessionId . '.env');
-            preg_match('/^DEBUG_SERVER_URL=(.+)$/m', (string)$env, $match);
-            $urls[$sessionId] = trim($match[1] ?? 'http://127.0.0.1:7777/event');
-        }
-        $result = @file_get_contents($urls[$sessionId], false, stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/json\r\nConnection: close\r\n",'content'=>$payload,'timeout'=>0.005,'ignore_errors'=>true]]));
-        if ($result !== false) {
-            $failures[$sessionId] = 0;
-            $openUntil[$sessionId] = 0.0;
-            return true;
-        }
-        $failures[$sessionId] = (int)($failures[$sessionId] ?? 0) + 1;
-        if ($failures[$sessionId] >= 2) {
-            $failures[$sessionId] = 0;
-            $openUntil[$sessionId] = $now + 30.0;
-        }
-        return false;
-    }
-
     private function _dbgPerfPipelineStage(string $streamId, string $stage, int $elapsedNs, int $bytes = 0, int $targetCount = 0): void
     {
         if (!isset($this->_dbgMediaPerf['pipeline'][$streamId])) {
@@ -812,10 +769,9 @@ class WebRTCServer
         }
         unset($subscriber);
         $loop = $this->_dbgMediaPerf['loop'];
-        $loopData = ['tickCount'=>$loop['tickCount'],'gapAvgMs'=>$loop['tickCount'] > 0 ? ($loop['gapSumUs'] / $loop['tickCount'] / 1000) : 0,'gapMaxMs'=>$loop['gapMaxUs'] / 1000,'memoryUsage'=>memory_get_usage(true),'cpu'=>$cpu];
-        $udpDrain = $this->_dbgMediaPerf['udpDrain'] ?? ['calls'=>0,'totalPackets'=>0,'maxBatch'=>0,'hitPacketLimit'=>0,'hitTimeLimit'=>0];
-        $payload = json_encode(['sessionId'=>'obs-dynamic-scene-disconnect','runId'=>'subscriber-pipeline-timing','hypothesisId'=>'subscriber-output-event-loop','location'=>'src/WebRTCServer.php:event-loop','msg'=>'[DEBUG] Subscriber pipeline/event-loop 1s aggregate','data'=>['intervalMs'=>(int)(($now-(float)$this->_dbgMediaPerf['lastReportAt'])*1000),'publishers'=>$publishers,'pipeline'=>$pipeline,'subscribers'=>$subscribers,'eventLoop'=>$loopData,'udpDrain'=>$udpDrain,'collector'=>['timeoutMs'=>5,'circuitBreaker'=>'2 failures/30s']],'ts'=>(int)($now*1000)]);
-        $this->_dbgHttpPost($payload, 'obs-dynamic-scene-disconnect');
+
+
+
         $this->_dbgMediaPerf = ['lastReportAt'=>$now,'lastRusage'=>$usage,'loop'=>['lastAt'=>$now,'tickCount'=>0,'gapSumUs'=>0,'gapMaxUs'=>0]];
         foreach ($_obsSubscriberContinuity as $_obsClientId => $_obsLast) {
             $this->_dbgMediaPerf['subscribers'][$_obsClientId] = ['clientId'=>$_obsClientId,'packetCount'=>0,'bytes'=>0,'markers'=>0,'seqGaps'=>0,'timestampBackwards'=>0,'sendFailure'=>0,'rewriteNsSum'=>0,'rewriteNsMax'=>0,'protectNsSum'=>0,'protectNsMax'=>0,'sendNsSum'=>0,'sendNsMax'=>0,'lastSeq'=>$_obsLast['lastSeq'],'lastTimestamp'=>$_obsLast['lastTimestamp']];
@@ -1410,21 +1366,6 @@ class WebRTCServer
             $_dbgPaddingCount = $_dbgPBit === 1 ? $_dbgLastByte : 0;
             $_dbgPaddingValid = $_dbgPBit === 0 || ($_dbgPaddingCount !== null && $_dbgPaddingCount > 0 && $_dbgPaddingCount <= $_dbgRawPayloadLen);
             $_dbgEffectivePayloadLen = $_dbgPaddingValid ? ($_dbgRawPayloadLen - ($_dbgPBit === 1 ? $_dbgPaddingCount : 0)) : $_dbgRawPayloadLen;
-            $_dbgRawNalType = $_dbgRawPayloadLen > 0 && $hdrLen >= 0 && $hdrLen < $pktLen ? (ord($plainRtp[$hdrLen]) & 0x1F) : null;
-            if ($_dbgPBit === 1 && $_dbgPaddingValid && $_dbgEffectivePayloadLen === 0) {
-                static $_dbgPurePaddingI = [];
-                $_dbgNowI = microtime(true);
-                if (!isset($_dbgPurePaddingI[$streamId])) $_dbgPurePaddingI[$streamId] = ['count'=>0,'immediate'=>0,'lastReport'=>$_dbgNowI];
-                $_dbgPurePaddingI[$streamId]['count']++;
-                $_dbgImmediateI = $_dbgPurePaddingI[$streamId]['immediate'] < 3;
-                $_dbgPeriodicI = !$_dbgImmediateI && ($_dbgNowI - $_dbgPurePaddingI[$streamId]['lastReport']) >= 1.0;
-                if ($_dbgImmediateI || $_dbgPeriodicI) {
-                    if ($_dbgImmediateI) $_dbgPurePaddingI[$streamId]['immediate']++;
-                    $_dbgPayload=json_encode(['sessionId'=>'whep-zero-video','runId'=>'post-srtcp-feedback-fix','hypothesisId'=>'I','location'=>'src/WebRTCServer.php:publisher-pure-padding','msg'=>'[DEBUG] Publisher pure RTP padding sampled/aggregated','data'=>['streamId'=>$streamId,'aggregate'=>!$_dbgImmediateI,'count'=>$_dbgPurePaddingI[$streamId]['count'],'seq'=>$hSeq,'timestamp'=>$hTs,'pt'=>$hPT,'paddingCount'=>$_dbgPaddingCount],'ts'=>(int)($_dbgNowI*1000)]);
-                    $this->_dbgHttpPost($_dbgPayload);
-                    if ($_dbgPeriodicI || ($_dbgImmediateI && $_dbgPurePaddingI[$streamId]['immediate'] === 3)) { $_dbgPurePaddingI[$streamId]['count']=0; $_dbgPurePaddingI[$streamId]['lastReport']=$_dbgNowI; }
-                }
-            }
         } catch (\Throwable $_dbgPaddingError) {
         }
 
@@ -1605,20 +1546,6 @@ class WebRTCServer
                         }
                         unset($_profilePtInfo);
                         $this->_log_std("[H264 profile detected] streamId={$streamId} profile-level-id={$_dbgActualProfileLevelId} source={$_dbgSpsSource}\n");
-                        $_dbgPubOfferH264 = (array)($this->clients[$excludeClientId]['_dbgOfferH264'] ?? []);
-                        $_dbgCfgH264 = [];
-                        foreach ((array)($this->_sfuStreamConfig[$streamId]['videoPTs'] ?? []) as $_dbgCfgPt => $_dbgCfgPtInfo) {
-                            if (!is_array($_dbgCfgPtInfo)) continue;
-                            $_dbgCfgCodec = strtolower((string)($_dbgCfgPtInfo['codec'] ?? explode('/', (string)($_dbgCfgPtInfo['rtpmap'] ?? ''))[0]));
-                            if ($_dbgCfgCodec === 'h264') $_dbgCfgH264[] = ['pt'=>(int)$_dbgCfgPt,'rtpmap'=>(string)($_dbgCfgPtInfo['rtpmap'] ?? ''),'fmtp'=>(string)($_dbgCfgPtInfo['fmtp'] ?? '')];
-                        }
-                        $_dbgWhepAnswers = [];
-                        foreach ($this->clients as $_dbgSubId => $_dbgSub) {
-                            $_dbgSubMeta = is_array($_dbgSub['meta'] ?? null) ? $_dbgSub['meta'] : [];
-                            if (($_dbgSubMeta['role'] ?? '') === 'play' && ($_dbgSubMeta['streamId'] ?? '') === $streamId) $_dbgWhepAnswers[] = ['clientId'=>(int)$_dbgSubId,'h264'=>(array)($_dbgSub['_dbgAnswerH264'] ?? [])];
-                        }
-                        $_dbgPayloadM = json_encode(['sessionId'=>'whep-zero-video','runId'=>'post-padding-k-l-m','hypothesisId'=>'M','location'=>'src/WebRTCServer.php:first-sps-profile','msg'=>'[DEBUG] First SPS actual profile-level-id','data'=>['streamId'=>$streamId,'publisherId'=>$excludeClientId,'source'=>$_dbgSpsSource,'actualProfileLevelId'=>$_dbgActualProfileLevelId,'publisherOfferH264'=>$_dbgPubOfferH264,'streamConfigH264'=>$_dbgCfgH264,'whepAnswerH264'=>$_dbgWhepAnswers],'ts'=>(int)(microtime(true)*1000)]);
-                        $this->_dbgHttpPost($_dbgPayloadM);
                     }
                 }
 
@@ -2001,28 +1928,6 @@ class WebRTCServer
 
                 if ($kind === 'video' && empty($this->clients[$id]['_dbgBurstLiveBoundaryReportedK']) && is_string($this->clients[$id]['_dbgBurstLastVideoRtpK'] ?? null)) {
                     $this->clients[$id]['_dbgBurstLiveBoundaryReportedK'] = true;
-                    $_dbgDescribeBoundaryK = static function (string $_dbgPacketK): array {
-                        $_dbgB0K = ord($_dbgPacketK[0]);
-                        $_dbgHdrK = 12 + 4 * ($_dbgB0K & 0x0F);
-                        if (($_dbgB0K & 0x10) !== 0 && strlen($_dbgPacketK) >= $_dbgHdrK + 4) $_dbgHdrK += 4 + 4 * unpack('n', substr($_dbgPacketK, $_dbgHdrK + 2, 2))[1];
-                        $_dbgPayloadLenK = max(0, strlen($_dbgPacketK) - $_dbgHdrK);
-                        $_dbgNalK = $_dbgPayloadLenK > 0 ? (ord($_dbgPacketK[$_dbgHdrK]) & 0x1F) : null;
-                        $_dbgFuStartK = null; $_dbgFuEndK = null; $_dbgFuTypeK = null;
-                        if ($_dbgNalK === 28 && $_dbgPayloadLenK >= 2) {
-                            $_dbgFuHeaderK = ord($_dbgPacketK[$_dbgHdrK + 1]);
-                            $_dbgFuTypeK = $_dbgFuHeaderK & 0x1F;
-                            $_dbgFuStartK = (($_dbgFuHeaderK >> 7) & 1) === 1;
-                            $_dbgFuEndK = (($_dbgFuHeaderK >> 6) & 1) === 1;
-                        }
-                        return ['seq'=>unpack('n', substr($_dbgPacketK, 2, 2))[1],'publisherSeq'=>unpack('n', substr($_dbgPacketK, 2, 2))[1],'timestamp'=>unpack('N', substr($_dbgPacketK, 4, 4))[1],'marker'=>(ord($_dbgPacketK[1]) >> 7) & 1,'nalType'=>$_dbgNalK,'fuType'=>$_dbgFuTypeK,'fuStart'=>$_dbgFuStartK,'fuEnd'=>$_dbgFuEndK];
-                    };
-                    $_dbgBurstLastK = $_dbgDescribeBoundaryK($this->clients[$id]['_dbgBurstLastVideoRtpK']);
-                    $_dbgBurstLastK['outSeq'] = $this->clients[$id]['_dbgBurstLastOutSeqK'] ?? null;
-                    $_dbgLiveFirstK = $_dbgDescribeBoundaryK($plainRtp);
-                    $_dbgServerVideoSsrcK = (int)($this->clients[$id]['serverVideoSsrc'] ?? 0);
-                    $_dbgLiveFirstK['outSeq'] = isset($this->clients[$id]['_outSeq'][$_dbgServerVideoSsrcK]) ? (int)$this->clients[$id]['_outSeq'][$_dbgServerVideoSsrcK] : null;
-                    $_dbgPayloadK = json_encode(['sessionId'=>'whep-zero-video','runId'=>'post-padding-k-l-m','hypothesisId'=>'K','location'=>'src/WebRTCServer.php:subscriber-burst-live-boundary','msg'=>'[DEBUG] Subscriber burst last versus first live video','data'=>['clientId'=>$id,'streamId'=>$streamId,'burstLast'=>$_dbgBurstLastK,'firstLive'=>$_dbgLiveFirstK,'sameTimestamp'=>$_dbgBurstLastK['timestamp'] === $_dbgLiveFirstK['timestamp']],'ts'=>(int)(microtime(true)*1000)]);
-                    $this->_dbgHttpPost($_dbgPayloadK);
                 }
 
                 if ($kind === 'video' && $isKeyFrame) {
@@ -2175,7 +2080,6 @@ class WebRTCServer
             $_obsPliEvidence[$streamId]['lastAt'] = $_obsEvidenceNow;
             $_obsEvidenceData = ['streamId'=>$streamId,'publisherId'=>$pubId,'resolvedVideoSsrc'=>$pubSsrc,'source'=>$pubSsrcSource,'incomingSsrcByKind'=>(array)($publisher['incomingSsrcByKind'] ?? []),'incomingSsrcByPt'=>(array)($publisher['incomingSsrcByPt'] ?? []),'publisherVideoPtKeys'=>array_keys((array)($publisher['videoPTs'] ?? []))];
             $this->_log_std('[OBS PLI SSRC POST-FIX] ' . json_encode($_obsEvidenceData) . "\n");
-            $this->_dbgHttpPost(json_encode(['sessionId'=>'obs-media-pixelation','runId'=>'post-fix','hypothesisId'=>'pli-video-ssrc','location'=>'src/WebRTCServer.php:sendPliToPublisher','msg'=>'[DEBUG] Publisher video SSRC resolution','data'=>$_obsEvidenceData,'ts'=>(int)($_obsEvidenceNow*1000)]), 'obs-media-pixelation');
         }
 
         if ($pubSsrc <= 0) return false;
@@ -2875,7 +2779,6 @@ class WebRTCServer
             $client['_publisherRrLog'] = $log;
 
             if (($now - (float)$obsRr['lastReportAt']) >= 10.0) {
-                $this->_dbgHttpPost(json_encode(['sessionId'=>'obs-media-pixelation','runId'=>'pre-rr-gap-analysis','hypothesisId'=>'rr-content-independence','location'=>'src/WebRTCServer.php:sendPublisherReceiverReports','msg'=>'[DEBUG] Publisher RR 10s aggregate','data'=>['clientId'=>(int)$clientId,'streamId'=>(string)($meta['streamId']??''),'rrCount'=>$obsRr['rrCount'],'sent'=>$obsRr['sent'],'failed'=>$obsRr['failed'],'ssrcs'=>array_values($obsRr['ssrcs'])],'ts'=>(int)($now*1000)]),'obs-media-pixelation');
                 $obsRr = ['lastReportAt'=>$now,'rrCount'=>0,'sent'=>0,'failed'=>0,'ssrcs'=>[]];
             }
             $client['_obsRrAggregate'] = $obsRr;

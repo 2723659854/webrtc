@@ -94,29 +94,6 @@ class SRTP
      */
     public $logger = null;
 
-    private function _srtpDbgHttpPost(string $payload): ?bool
-    {
-        static $url = null, $failures = 0, $openUntil = 0.0;
-        $now = microtime(true);
-        if ($openUntil > $now) return null;
-        if ($url === null) {
-            $env = @file_get_contents(dirname(__DIR__, 2) . '/.dbg/whep-zero-video.env');
-            preg_match('/^DEBUG_SERVER_URL=(.+)$/m', (string)$env, $match);
-            $url = trim($match[1] ?? 'http://127.0.0.1:7777/event');
-        }
-        $result = @file_get_contents($url, false, stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/json\r\n",'content'=>$payload,'timeout'=>0.005,'ignore_errors'=>true]]));
-        if ($result !== false) {
-            $failures = 0;
-            $openUntil = 0.0;
-            return true;
-        }
-        if (++$failures >= 2) {
-            $failures = 0;
-            $openUntil = $now + 30.0;
-        }
-        return false;
-    }
-
     /**
      * 内部诊断：通过 logger 输出 hex dump（若 logger 已设置）。
      *   每个失败类型默认最多输出 3 次，避免刷屏。
@@ -445,23 +422,9 @@ class SRTP
         $encLen   = $bodyLen - $encStart;
         $srtcp    = $rtcp;
 
-        static $_dbgSrtcpBeforeCount = 0;
-        if ($_dbgSrtcpBeforeCount < 3) {
-            $_dbgSrtcpBeforeCount++;
-            $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'pre-fix','hypothesisId'=>'D','location'=>'src/Core/SRTP.php:protectRtcp-before-index','msg'=>'[DEBUG] PLI SRTCP index before protect','data'=>['rtcpPt'=>(ord($rtcp[1]) & 0xFF),'fmt'=>(ord($rtcp[0]) & 0x1F),'ssrc'=>(int)$ssrcVal,'declaredSrtcpIndex'=>(int)$this->srtcpIndex,'dynamicUnderscoreIndexExists'=>property_exists($this, '_srtcpIndex'),'dynamicUnderscoreIndexValue'=>property_exists($this, '_srtcpIndex') ? (int)$this->_srtcpIndex : null,'sample'=>$_dbgSrtcpBeforeCount],'ts'=>(int)(microtime(true)*1000)]);
-            $this->_srtpDbgHttpPost($_dbgPayload);
-        }
-
         $packetSrtcpIndex = $this->srtcpIndex;
         $srtcpIndexWord = pack('N', 0x80000000 | $packetSrtcpIndex);
         $this->srtcpIndex = ($this->srtcpIndex + 1) & 0x7FFFFFFF;
-
-        static $_dbgSrtcpAfterCount = 0;
-        if ($_dbgSrtcpAfterCount < 3) {
-            $_dbgSrtcpAfterCount++;
-            $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'pre-fix','hypothesisId'=>'D','location'=>'src/Core/SRTP.php:protectRtcp-after-index','msg'=>'[DEBUG] PLI SRTCP index after increment','data'=>['declaredSrtcpIndex'=>(int)$this->srtcpIndex,'dynamicUnderscoreIndexExists'=>property_exists($this, '_srtcpIndex'),'dynamicUnderscoreIndexValue'=>property_exists($this, '_srtcpIndex') ? (int)$this->_srtcpIndex : null,'sample'=>$_dbgSrtcpAfterCount],'ts'=>(int)(microtime(true)*1000)]);
-            $this->_srtpDbgHttpPost($_dbgPayload);
-        }
 
         if ($encLen > 0) {
             $counter = $this->_buildSrtcpIcmCounter($ssrcVal, $packetSrtcpIndex);

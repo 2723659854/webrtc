@@ -564,27 +564,6 @@ trait SDP
 
         $sdp = preg_replace("/\r\n|\r|\n/", "\r\n", rtrim($sdp, "\r\n")) . "\r\n";
 
-        if ($isWhep) {
-            static $_dbgWhepAnswerReported = false;
-            if (!$_dbgWhepAnswerReported) {
-                $_dbgWhepAnswerReported = true;
-                $_dbgMedia = [];
-                if (preg_match_all('/(^m=(audio|video)[\s\S]*?)(?=^m=|\z)/m', $sdp, $_dbgSections, PREG_SET_ORDER)) {
-                    foreach ($_dbgSections as $_dbgSection) {
-                        preg_match('/^m=\S+\s+\d+\s+\S+\s+(.+)$/m', $_dbgSection[1], $_dbgPts);
-                        preg_match('/^a=mid:(\S+)/m', $_dbgSection[1], $_dbgMid);
-                        preg_match('/^a=(sendonly|recvonly|sendrecv|inactive)$/m', $_dbgSection[1], $_dbgDir);
-                        $_dbgMedia[] = ['kind'=>$_dbgSection[2], 'pts'=>preg_split('/\s+/', trim($_dbgPts[1] ?? '')), 'mid'=>$_dbgMid[1] ?? '', 'direction'=>$_dbgDir[1] ?? ''];
-                    }
-                }
-                $_dbgEnv = @file_get_contents(dirname(__DIR__, 2) . '/.dbg/whep-zero-video.env');
-                preg_match('/^DEBUG_SERVER_URL=(.+)$/m', (string)$_dbgEnv, $_dbgUrlMatch);
-                $_dbgUrl = trim($_dbgUrlMatch[1] ?? 'http://127.0.0.1:7777/event');
-                $_dbgPayload = json_encode(['sessionId'=>'whep-zero-video','runId'=>'pre-fix','hypothesisId'=>'E','location'=>'src/Core/SDP.php:WHEP-answer','msg'=>'[DEBUG] WHEP Answer media PT/MID/direction','data'=>['media'=>$_dbgMedia],'ts'=>(int)(microtime(true)*1000)]);
-                @file_get_contents($_dbgUrl, false, stream_context_create(['http'=>['method'=>'POST','header'=>"Content-Type: application/json\r\n",'content'=>$_dbgPayload,'timeout'=>0.05,'ignore_errors'=>true]]));
-            }
-        }
-
         $result = [
             'sdp' => $sdp,
             'ice-ufrag' => $localIceUfrag,
