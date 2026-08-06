@@ -13,7 +13,7 @@ $server = new WebRTCServer(8088, 8089, 3478, __DIR__."/debug.log");
 // 设置公网ip，当对外提供服务的时候务必设置
 $server->publicIp = '127.0.0.1';
 // 是否开发模式
-$server->isDev = true;
+$server->isDev = false;
 
 $rooms = [];
 
