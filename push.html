@@ -104,6 +104,7 @@
     let WIDTH = 854, HEIGHT = 480, FPS = 25, CUR_BITRATE_KBPS = 2000;
     const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
     let ROOM_ID = 'stream_001';
+    const stunHost = window.location.hostname;
 
     // ========== 状态 ==========
     let pc = null, ws = null, localStream = null, dc = null;
@@ -356,7 +357,7 @@
     }
 
     async function createPeerConnection() {
-        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        pc = new RTCPeerConnection({ iceServers: [{ urls: `stun:${stunHost}:3478` }] });
         bindDataChannel(pc.createDataChannel('chat', { ordered: true, id: 0 }));
 
         localStream.getTracks().forEach(track => {

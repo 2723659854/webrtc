@@ -88,7 +88,7 @@
   let ws = null;
   let isConnected = false;
   let msgCounter = 0;
-
+  const stunHost = window.location.hostname;
   // ========== UI 辅助函数 ==========
   function $(id) { return document.getElementById(id); }
 
@@ -195,7 +195,7 @@
   async function createPeerConnection() {
     pc = new RTCPeerConnection({
       iceServers: [
-        { urls: 'stun:127.0.0.1:3478' }
+        { urls: `stun:${stunHost}:3478` }
       ],
       iceCandidatePoolSize: 0,
       iceTransportPolicy: 'all'  // 允许所有候选

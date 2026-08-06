@@ -94,6 +94,7 @@
     let _statsTimer = null, _statsCounter = 0;
     let _startTime = 0;
     let _logBuffer = [], _logTimer = null;
+    const stunHost = window.location.hostname;
 
     // ========== 批量日志 ==========
     function log(msg, level='info') {
@@ -306,7 +307,7 @@
 
     // ========== PeerConnection ==========
     async function createPeerConnection() {
-        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:3478' }] });
+        pc = new RTCPeerConnection({ iceServers: [{ urls: `stun:${stunHost}:3478` }] });
         pc.ondatachannel = (event) => {
             console.log('🔥 DataChannel 事件触发！');
             log('检测到远端 DataChannel', 'info');
