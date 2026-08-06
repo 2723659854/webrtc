@@ -13,7 +13,7 @@ $server = new WebRTCServer(8088, 8089, 3478, __DIR__."/debug.log");
 // 设置公网ip，当对外提供服务的时候务必设置
 $server->publicIp = '127.0.0.1';
 // 是否开发模式
-$server->isDev = false;
+$server->isDev = true;
 
 $rooms = [];
 
@@ -49,6 +49,7 @@ $server->onJoin = function (int $clientId, array $msg, WebRTCServer $srv, &$hand
         $srv->_log_std($msg);
     } else {
         $rooms[$streamId]['subscribers'][$clientId] = true;
+        $srv->setClientMeta($clientId, 'clientOffer', !empty($msg['clientOffer']));
         $pushId     = $rooms[$streamId]['pushId'];
         $viewerCnt  = count($rooms[$streamId]['subscribers']);
         $msg = "[onJoin] client={$clientId} 作为观众加入房间 streamId={$streamId} 当前观众数={$viewerCnt} 推流端=" . ($pushId === null ? '无' : $pushId) . "\n";
@@ -89,6 +90,10 @@ $server->onPublisher = function (int $clientId, array $ctx, WebRTCServer $srv) u
         $subIds = array_keys($rooms[$streamId]['subscribers'] ?? []);
         foreach ($subIds as $subId) {
             $subId = (int)$subId;
+            if ($srv->getClientMeta($subId, 'clientOffer', false)) {
+                $srv->_log_std("[onPublisher] subscriberId={$subId} 使用浏览器 Offer，跳过服务端 SFU Offer\n");
+                continue;
+            }
             $offer = $srv->makeSfuOfferForSubscriber($subId, $clientId);
             if ($offer === null) {
                 $srv->_log_std("[onPublisher] subscriberId={$subId} makeSfuOfferForSubscriber(pub={$clientId}) FAIL\n");
@@ -121,7 +126,8 @@ $server->onSubscriber = function (int $clientId, array $ctx, WebRTCServer $srv) 
     $srv->setClientMeta($clientId, 'subscriberHandled', 'true');
 
     $offerSent = false;
-    if ($streamId !== '') {
+    $clientOffer = (bool)$srv->getClientMeta($clientId, 'clientOffer', false);
+    if ($streamId !== '' && !$clientOffer) {
 
         $currentPushId = $pushId;
         if ($currentPushId === null && isset($rooms[$streamId])) {
@@ -139,8 +145,12 @@ $server->onSubscriber = function (int $clientId, array $ctx, WebRTCServer $srv) 
         }
     }
 
-    $kick1 = $srv->kickFaststartForSubscriber($clientId);
-    $srv->_log_std("[onSubscriber] subscriberId={$clientId} kickFaststart(T+0 join) pliSent=" . ($kick1['pliSent']?'yes':'no') . " gopBurst=" . (int)$kick1['gopBurst'] . " offerSent=" . ($offerSent?'yes':'no') . "\n");
+    if (!$clientOffer) {
+        $kick1 = $srv->kickFaststartForSubscriber($clientId);
+        $srv->_log_std("[onSubscriber] subscriberId={$clientId} kickFaststart(T+0 join) pliSent=" . ($kick1['pliSent']?'yes':'no') . " gopBurst=" . (int)$kick1['gopBurst'] . " offerSent=" . ($offerSent?'yes':'no') . "\n");
+    } else {
+        $srv->_log_std("[onSubscriber] subscriberId={$clientId} 等待浏览器 Offer 完成后 kickFaststart\n");
+    }
 };
 
 $server->onOffer = function (int $clientId, string $offerSdp, string $answerSdp, WebRTCServer $srv) {

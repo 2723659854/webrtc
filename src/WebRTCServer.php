@@ -1259,7 +1259,7 @@ class WebRTCServer
     }
 
     /**
-     * 返回所有带指定 metadata['streamId'] 且 SCTP 已就绪的客户端列表 (房间聊天辅助)。
+     * 返回所有带指定 meta['streamId'] 且 SCTP 已就绪的客户端列表 (房间聊天辅助)。
      * - 自动包含同 streamId 下 role=push 和 role=play 的所有端；
      * - 适合 push.html / play.html 开启 DataChannel 时的"同房间聊天"场景。
      * @param string $streamId 房间号
@@ -1275,7 +1275,7 @@ class WebRTCServer
         foreach ($this->clients as $id => $c) {
             $id = (int)$id;
             if (isset($ex[$id])) continue;
-            $sid = isset($c['metadata']) && is_array($c['metadata']) ? (string)($c['metadata']['streamId'] ?? '') : '';
+            $sid = isset($c['meta']) && is_array($c['meta']) ? (string)($c['meta']['streamId'] ?? '') : '';
             if ($sid !== $streamId) continue;
             if (isset($c['sctp']) && is_array($c['sctp']) && ($c['sctp']['state'] ?? '') === 'ESTABLISHED') {
                 $ids[] = $id;

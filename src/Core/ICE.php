@@ -49,7 +49,27 @@ trait ICE
         $this->clients[$clientId]['remoteIceUfrag'] = $remoteIceUfrag;
         $this->clients[$clientId]['remoteIcePwd']   = $remoteIcePwd;
 
-        $answerInfo = $this->generateAnswerSDP($sdp, $remoteIceUfrag, $remoteIcePwd, $remoteSetup, ['forceVideoAudioDefault' => false]);
+        $role = (string)$this->getClientMeta($clientId, 'role', '');
+        $streamId = (string)$this->getClientMeta($clientId, 'streamId', '');
+        $opts = ['forceVideoAudioDefault' => false];
+        if ($role === 'play') {
+            if ($streamId === '' || !isset($this->_sfuStreamConfig[$streamId]) || !is_array($this->_sfuStreamConfig[$streamId])) {
+                $this->_log_std("Client {$clientId} handleOffer: play streamId={$streamId} not ready\n");
+                $this->sendSignaling((int)$clientId, ['type' => 'error', 'code' => 'stream-not-ready', 'message' => '主播未开播']);
+                return;
+            }
+            $cfg = $this->_sfuStreamConfig[$streamId];
+            $opts['whep'] = true;
+            $opts['serverVideoSsrc'] = (int)($cfg['serverVideoSsrc'] ?? 0);
+            $opts['serverAudioSsrc'] = (int)($cfg['serverAudioSsrc'] ?? 0);
+            $opts['cname'] = (string)($cfg['cname'] ?? '');
+            $opts['msidStream'] = (string)($cfg['msidStreamId'] ?? '');
+            $opts['msidVideoTrack'] = (string)($cfg['msidVideoTrackId'] ?? '');
+            $opts['msidAudioTrack'] = (string)($cfg['msidAudioTrackId'] ?? '');
+            $opts['h264ProfileLevelId'] = (string)($cfg['h264ProfileLevelId'] ?? '42e01f');
+        }
+
+        $answerInfo = $this->generateAnswerSDP($sdp, $remoteIceUfrag, $remoteIcePwd, $remoteSetup, $opts);
 
         $localUfrag = (string)($answerInfo['ice-ufrag'] ?? '');
         $localPwd   = (string)($answerInfo['ice-pwd']   ?? '');
@@ -140,6 +160,11 @@ trait ICE
             } catch (\Throwable $e) {
                 $this->_log_std("Client {$clientId} onPublisher exception: " . $e->getMessage() . "\n");
             }
+        }
+
+        if ($role === 'play') {
+            $faststart = $this->kickFaststartForSubscriber((int)$clientId);
+            $this->_log_std("Client {$clientId} (play) offer 完成 → kickFaststart pliSent=" . ($faststart['pliSent'] ? 'yes' : 'no') . " gopBurst=" . (int)$faststart['gopBurst'] . "\n");
         }
 
         if ($role === 'push') {

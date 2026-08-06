@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebRTC 屏幕推流（Canvas 代理）</title>
+    <title>WebRTC 屏幕推流</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f1a; color: #e0e0e0; padding: 20px; }
@@ -25,22 +25,25 @@
         .status.connecting { background: #2a1a0a; color: #ff9f1c; }
         .status.streaming { background: #0a2a1a; color: #06d6a0; }
         .status.failed { background: #2a0a0a; color: #f72585; }
-        .media-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
-        .panel-box { background: #000; border: 1px solid #2a2a3e; border-radius: 8px; padding: 8px; display: flex; justify-content: center; align-items: center; flex-direction: column; }
-        .panel-box canvas, .panel-box video { width: 100%; max-height: 260px; border-radius: 4px; background: #111; display: block; }
-        .panel-title { color: #888; font-size: 0.8em; margin-bottom: 6px; }
+        .video-box { background: #000; border: 1px solid #2a2a3e; border-radius: 8px; padding: 8px; margin-bottom: 10px; display: flex; justify-content: center; }
+        .video-box video { width: 100%; max-height: 400px; border-radius: 4px; background: #111; display: block; }
         .log-box { background: #000; border: 1px solid #2a2a3e; border-radius: 8px; padding: 12px; margin-top: 15px; max-height: 260px; overflow-y: auto; font-family: monospace; font-size: 0.8em; }
         .log-box .time { color: #555; }
         .log-box .info { color: #ccc; }
         .log-box .warn { color: #ff9f1c; }
         .log-box .success { color: #06d6a0; }
         .log-box .error { color: #f72585; }
+        .chat-controls { display: flex; gap: 10px; margin-top: 15px; }
+        .chat-controls input { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #2a2a3e; background: #1a1a2e; color: #e0e0e0; font-size: 0.95em; }
+        .chat-controls input:focus { outline: none; border-color: #4cc9f0; }
+        .chat-controls input:disabled { opacity: 0.4; }
+        .btn-send { background: #06d6a0; color: #000; }
     </style>
 </head>
 <body>
 <div class="container">
-    <h1>📺 屏幕推流（Canvas 代理）</h1>
-    <p class="subtitle">捕获屏幕（视频+真实音频） → Canvas 代理 → WebRTC 推流，房间 ID: <span id="roomIdDisplay">stream_001</span></p>
+    <h1>📤 WebRTC 屏幕推流</h1>
+    <p class="subtitle">捕获屏幕（视频+系统音频）并通过 WebRTC 推流，房间 ID: <span id="roomIdDisplay">stream_001</span></p>
     <div class="controls">
         <button class="btn btn-start" id="btnStart" onclick="startPush()">▶ 开始推流</button>
         <button class="btn btn-stop" id="btnStop" onclick="stopPush()" disabled>■ 停止</button>
@@ -85,33 +88,26 @@
         </div>
     </div>
 
-    <div class="media-grid">
-        <div class="panel-box">
-            <div class="panel-title">Canvas 代理（推流内容）</div>
-            <canvas id="proxyCanvas" width="854" height="480" style="aspect-ratio:16/9;"></canvas>
-        </div>
-        <div class="panel-box">
-            <div class="panel-title">本地预览（MediaStream）</div>
-            <video id="localVideo" autoplay muted playsinline style="aspect-ratio:16/9;"></video>
-        </div>
+    <div class="video-box">
+        <video id="localVideo" autoplay muted playsinline></video>
     </div>
 
+    <div class="chat-controls">
+        <input type="text" id="chatInput" placeholder="输入聊天消息..." disabled>
+        <button class="btn btn-send" id="btnSend" onclick="sendChatMessage()" disabled>发送</button>
+    </div>
     <div class="log-box" id="logBox"></div>
 </div>
 
 <script>
     // ========== 配置 ==========
-    let CANVAS_W = 854, CANVAS_H = 480, CANVAS_FPS = 25, CUR_BITRATE_KBPS = 2000;
+    let WIDTH = 854, HEIGHT = 480, FPS = 25, CUR_BITRATE_KBPS = 2000;
     const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
     let ROOM_ID = 'stream_001';
 
     // ========== 状态 ==========
-    let pc = null, ws = null, localStream = null;
+    let pc = null, ws = null, localStream = null, dc = null;
     let isStreaming = false, joined = false;
-    let drawTimer = null, watchdogTimer = null;
-    let drawFrameCount = 0, lastDrawFrameCount = 0;
-    let captureStream = null;  // 屏幕捕获流
-    let hiddenVideo = null;   // 隐藏 video 解码屏幕流
 
     function $(id) { return document.getElementById(id); }
     $('wsUrlInput').value = WS_URL;
@@ -131,27 +127,69 @@
         $('btnStart').disabled = starting;
         $('btnStop').disabled = !starting;
     }
+    function setChatEnabled(enabled) {
+        $('chatInput').disabled = !enabled;
+        $('btnSend').disabled = !enabled;
+    }
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    function bindDataChannel(channel) {
+        if (dc === channel) return;
+        if (dc && dc.readyState !== 'closed') {
+            try { dc.close(); } catch (_) {}
+        }
+        dc = channel;
+        setChatEnabled(false);
+        channel.onopen = () => {
+            if (dc !== channel) return;
+            log('💬 DataChannel 已打开', 'success');
+            setChatEnabled(true);
+        };
+        channel.onmessage = (event) => {
+            if (dc !== channel) return;
+            log(`📥 聊天: ${escapeHtml(String(event.data))}`, 'success');
+        };
+        channel.onerror = (event) => {
+            if (dc !== channel) return;
+            log(`DataChannel 错误: ${escapeHtml(event.error?.message || 'unknown')}`, 'error');
+        };
+        channel.onclose = () => {
+            if (dc !== channel) return;
+            log('DataChannel 已关闭', 'warn');
+            setChatEnabled(false);
+        };
+    }
+    function sendChatMessage() {
+        const input = $('chatInput');
+        const text = input.value.trim();
+        if (!text || !dc || dc.readyState !== 'open') return;
+        dc.send(text);
+        log(`📤 我: ${escapeHtml(text)}`, 'info');
+        input.value = '';
+    }
+    $('chatInput').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            sendChatMessage();
+        }
+    });
 
-    // ========== UI 热更新回调 ==========
+    // ========== UI 配置回调 ==========
     function onResChange() {
-        const v = $('resSelect').value;
-        const [w, h] = v.split('x').map(Number);
+        const [w, h] = $('resSelect').value.split('x').map(Number);
         if (!w || !h) return;
-        CANVAS_W = w; CANVAS_H = h;
-        const cv = $('proxyCanvas');
-        cv.width = w; cv.height = h;
-        if (isStreaming) log(`分辨率热更新: ${w}x${h}`, 'info');
+        WIDTH = w;
+        HEIGHT = h;
+        if (isStreaming) log(`分辨率已更新为 ${w}x${h}，下次推流生效`, 'info');
     }
     function onFpsChange() {
         const f = parseInt($('fpsSelect').value, 10);
         if (!f || f < 1) return;
-        CANVAS_FPS = f;
-        if (drawTimer) {
-            clearInterval(drawTimer);
-            const intervalMs = Math.max(16, Math.floor(1000 / CANVAS_FPS));
-            drawTimer = setInterval(() => drawOneFrame(), intervalMs);
-        }
-        if (isStreaming) log(`帧率热更新: ${f}fps`, 'info');
+        FPS = f;
+        if (isStreaming) log(`帧率已更新为 ${f}fps，下次推流生效`, 'info');
     }
     async function onBitrateChange() {
         const k = parseInt($('bitrateSelect').value, 10);
@@ -179,9 +217,9 @@
         const constraints = {
             video: {
                 cursor: 'always',
-                width: { ideal: CANVAS_W },
-                height: { ideal: CANVAS_H },
-                frameRate: { ideal: CANVAS_FPS, max: CANVAS_FPS + 5 },
+                width: { ideal: WIDTH },
+                height: { ideal: HEIGHT },
+                frameRate: { ideal: FPS, max: FPS + 5 },
             },
             audio: true,  // 真实音频
         };
@@ -196,7 +234,7 @@
             if (!vTrack) throw new Error('无视频轨道');
 
             const vs = vTrack.getSettings();
-            log(`✅ 视频: ${vs.width}x${vs.height} @ ${vs.frameRate || CANVAS_FPS}fps`, 'success');
+            log(`✅ 视频: ${vs.width}x${vs.height} @ ${vs.frameRate || FPS}fps`, 'success');
 
             if (aTrack) {
                 log(`✅ 音频: 已捕获系统音频`, 'success');
@@ -216,109 +254,6 @@
         }
     }
 
-    // ========== Canvas 代理绘制 ==========
-    function drawOneFrame() {
-        const canvas = $('proxyCanvas');
-        const ctx = canvas.getContext('2d');
-
-        try {
-            // 绘制屏幕内容
-            if (hiddenVideo && hiddenVideo.readyState >= 2) {
-                ctx.drawImage(hiddenVideo, 0, 0, CANVAS_W, CANVAS_H);
-
-                // 注入微弱噪点保持编码器活跃
-                const imageData = ctx.getImageData(0, 0, CANVAS_W, CANVAS_H);
-                const data = imageData.data;
-                for (let i = 0; i < data.length; i += 800) {
-                    if (Math.random() < 0.2) {
-                        const idx = i + (Math.floor(Math.random() * 4) % 4);
-                        if (idx < data.length) {
-                            data[idx] = Math.min(255, Math.max(0, data[idx] + (Math.random() > 0.5 ? 1 : -1)));
-                        }
-                    }
-                }
-                ctx.putImageData(imageData, 0, 0);
-            } else {
-                // 尚未获取到屏幕内容时，显示提示
-                ctx.fillStyle = '#111';
-                ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-                ctx.fillStyle = '#888';
-                ctx.font = '18px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText('等待屏幕内容...', CANVAS_W / 2, CANVAS_H / 2);
-                ctx.textAlign = 'start';
-            }
-        } catch (e) {
-            // 忽略绘制错误
-        }
-
-        drawFrameCount++;
-    }
-
-    function startCanvasDraw() {
-        stopCanvasDraw();
-        drawFrameCount = 0;
-        lastDrawFrameCount = 0;
-        const intervalMs = Math.max(16, Math.floor(1000 / CANVAS_FPS));
-
-        // 初始化隐藏 video（仅用于视频解码）
-        hiddenVideo = document.createElement('video');
-        hiddenVideo.muted = true;
-        hiddenVideo.playsInline = true;
-
-        // 创建只含视频轨道的流给 hiddenVideo 解码
-        if (captureStream) {
-            const videoOnlyStream = new MediaStream();
-            const vTrack = captureStream.getVideoTracks()[0];
-            if (vTrack) videoOnlyStream.addTrack(vTrack);
-            hiddenVideo.srcObject = videoOnlyStream;
-            hiddenVideo.play().catch(e => log(`Video play 警告: ${e.message}`, 'warn'));
-        }
-
-        drawOneFrame();
-        drawTimer = setInterval(() => drawOneFrame(), intervalMs);
-        log(`Canvas 代理启动: ${CANVAS_W}x${CANVAS_H} @ ${CANVAS_FPS}fps`, 'info');
-
-        // 看门狗
-        watchdogTimer = setInterval(() => {
-            if (drawFrameCount === lastDrawFrameCount) {
-                log('⚠️ Canvas 看门狗触发：绘制已停止，重启定时器', 'warn');
-                clearInterval(drawTimer);
-                drawTimer = setInterval(() => drawOneFrame(), intervalMs);
-            }
-            lastDrawFrameCount = drawFrameCount;
-        }, 3000);
-    }
-
-    function stopCanvasDraw() {
-        if (drawTimer) { clearInterval(drawTimer); drawTimer = null; }
-        if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
-        if (hiddenVideo) {
-            hiddenVideo.srcObject = null;
-            hiddenVideo = null;
-        }
-    }
-
-    // ========== 构建推流 MediaStream ==========
-    function buildPushStream() {
-        // Canvas 视频
-        const canvasStream = $('proxyCanvas').captureStream(CANVAS_FPS);
-        const vTrack = canvasStream.getVideoTracks()[0];
-
-        // 真实音频（从屏幕捕获流中获取）
-        let aTrack = null;
-        if (captureStream) {
-            aTrack = captureStream.getAudioTracks()[0];
-        }
-
-        const finalStream = new MediaStream();
-        if (vTrack) finalStream.addTrack(vTrack);
-        if (aTrack) finalStream.addTrack(aTrack);
-
-        log(`推流 MediaStream 就绪: video=${vTrack ? 1 : 0} audio=${aTrack ? 1 : 0}`, 'success');
-        return finalStream;
-    }
-
     // ========== 推流主流程 ==========
     async function startPush() {
         stopPush();
@@ -327,9 +262,9 @@
 
         // 读取配置
         const [w, h] = $('resSelect').value.split('x').map(Number);
-        CANVAS_W = w || 854;
-        CANVAS_H = h || 480;
-        CANVAS_FPS = parseInt($('fpsSelect').value, 10) || 25;
+        WIDTH = w || 854;
+        HEIGHT = h || 480;
+        FPS = parseInt($('fpsSelect').value, 10) || 25;
         CUR_BITRATE_KBPS = parseInt($('bitrateSelect').value, 10) || 2000;
         ROOM_ID = $('roomIdInput').value || 'stream_001';
         document.getElementById('roomIdDisplay').textContent = ROOM_ID;
@@ -339,13 +274,7 @@
 
         try {
             // 1. 获取屏幕流（含真实音频）
-            captureStream = await getDisplayMediaStream();
-
-            // 2. 启动 Canvas 代理
-            startCanvasDraw();
-
-            // 3. 构建推流 MediaStream
-            localStream = buildPushStream();
+            localStream = await getDisplayMediaStream();
             if (!localStream || localStream.getTracks().length === 0) {
                 throw new Error('构建 MediaStream 失败（0 tracks）');
             }
@@ -354,9 +283,9 @@
                 log('localVideo autoplay 被拦截: ' + e.message, 'warn');
             }
 
-            log(`本地 MediaStream 组装完成，轨道数: ${localStream.getTracks().length}`, 'success');
+            log(`本地屏幕流已就绪，轨道数: ${localStream.getTracks().length}`, 'success');
 
-            // 4. 连接信令
+            // 2. 连接信令
             const wsUrl = $('wsUrlInput').value || WS_URL;
             ws = new WebSocket(wsUrl);
 
@@ -428,6 +357,7 @@
 
     async function createPeerConnection() {
         pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        bindDataChannel(pc.createDataChannel('chat', { ordered: true, id: 0 }));
 
         localStream.getTracks().forEach(track => {
             pc.addTransceiver(track, {
@@ -435,12 +365,28 @@
                 streams: [localStream],
                 sendEncodings: [{
                     maxBitrate: CUR_BITRATE_KBPS * 1000,
-                    maxFramerate: CANVAS_FPS,
+                    maxFramerate: FPS,
                     priority: 'high',
                     networkPriority: 'high',
                 }]
             });
         });
+
+        const videoTransceiver = pc.getTransceivers().find(transceiver =>
+            transceiver.sender.track && transceiver.sender.track.kind === 'video'
+        );
+        if (videoTransceiver && typeof RTCRtpSender !== 'undefined' &&
+            typeof RTCRtpSender.getCapabilities === 'function' &&
+            typeof videoTransceiver.setCodecPreferences === 'function') {
+            try {
+                const codecs = RTCRtpSender.getCapabilities('video')?.codecs || [];
+                const h264Codecs = codecs.filter(codec => codec.mimeType.toLowerCase() === 'video/h264');
+                const otherCodecs = codecs.filter(codec => codec.mimeType.toLowerCase() !== 'video/h264');
+                videoTransceiver.setCodecPreferences([...h264Codecs, ...otherCodecs]);
+            } catch (_) {
+                // 不支持设置 codec 偏好时保持浏览器默认顺序
+            }
+        }
 
         // 设置编码参数
         const senders = pc.getSenders();
@@ -449,7 +395,7 @@
                 const params = sender.getParameters();
                 if (!params.encodings) params.encodings = [{}];
                 params.encodings[0].maxBitrate = CUR_BITRATE_KBPS * 1000;
-                params.encodings[0].maxFramerate = CANVAS_FPS;
+                params.encodings[0].maxFramerate = FPS;
                 params.encodings[0].priority = 'high';
                 params.encodings[0].networkPriority = 'high';
                 try { params.degradationPreference = 'balanced'; } catch (_) {}
@@ -500,26 +446,7 @@
 
     // ========== 关键帧循环 ==========
     let _keyFrameTimer = null;
-    function startKeyFrameLoop2() {
-        if (_keyFrameTimer) return;
-        let count = 0;
-        _keyFrameTimer = setInterval(async () => {
-            if (!pc || !isStreaming) return;
-            const senders = pc.getSenders();
-            for (const s of senders) {
-                if (s.track && s.track.kind === 'video') {
-                    try {
-                        if (typeof s.requestKeyFrame === 'function') {
-                            await s.requestKeyFrame();
-                            count++;
-                            if (count % 10 === 1) log(`📸 关键帧 ×${count}`, 'info');
-                        }
-                    } catch (e) {}
-                }
-            }
-        }, 2000);
-    }
-
+    // 强制每隔2秒生成一个关键帧，纠正画质
     function startKeyFrameLoop() {
         if (_keyFrameTimer) return;
         let count = 0;
@@ -552,117 +479,15 @@
     // ========== 创建 Offer ==========
     async function createOffer() {
         try {
-            let offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
-            // H.264 优先
-            offer = prioritizeH264Codec(offer);
+            const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
             await pc.setLocalDescription(offer);
             ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+            console.log('=== 推流端 Offer SDP ===\n', offer.sdp);   // 关键
             log('📤 Offer 已发送', 'success');
             setStatus('⏳ 等待 Answer...', 'connecting');
         } catch (e) {
             log(`❌ 创建 Offer 失败: ${e.message}`, 'error');
         }
-    }
-
-    // ========== H.264 优先排序 ==========
-    function prioritizeH264Codec(desc) {
-        const sdp = desc.sdp || '';
-        const lines = sdp.split(/\r\n|\n|\r/);
-        const outLines = [];
-        let inVideoSection = false;
-        let videoSectionStartIdx = -1;
-        let videoMlineOrig = null;
-        let videoPtList = [];
-
-        for (let i = 0; i < lines.length; i++) {
-            const l = lines[i];
-            if (l.startsWith('m=video ')) {
-                inVideoSection = true;
-                videoSectionStartIdx = i;
-                videoMlineOrig = l;
-                const parts = l.split(/\s+/);
-                for (let j = 3; j < parts.length; j++) {
-                    const p = parts[j].trim();
-                    if (/^\d+$/.test(p)) videoPtList.push(p);
-                }
-                break;
-            }
-        }
-
-        if (!videoMlineOrig || videoPtList.length === 0) return desc;
-
-        const ptToCodec = new Map();
-        const rtpmapMap = new Map();
-        const fmtpMap = new Map();
-        const fbMap = new Map();
-        for (const k of videoPtList) { fmtpMap.set(k, []); fbMap.set(k, []); }
-        const otherVideoLines = [];
-
-        for (let i = videoSectionStartIdx + 1; i < lines.length; i++) {
-            const l = lines[i];
-            if (!l) continue;
-            if (l.startsWith('m=')) break;
-
-            const mRtpmap = l.match(/^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)(?:\/|$)/);
-            if (mRtpmap) {
-                const pt = mRtpmap[1];
-                if (videoPtList.indexOf(pt) === -1) { otherVideoLines.push(l); continue; }
-                ptToCodec.set(pt, mRtpmap[2].toLowerCase());
-                rtpmapMap.set(pt, l);
-                continue;
-            }
-            const mFmtp = l.match(/^a=fmtp:(\d+)(?:\s|$)/);
-            if (mFmtp) {
-                const pt = mFmtp[1];
-                if (videoPtList.indexOf(pt) !== -1) { fmtpMap.get(pt).push(l); }
-                continue;
-            }
-            const mFb = l.match(/^a=rtcp-fb:(\d+)(?:\s|$)/);
-            if (mFb) {
-                const pt = mFb[1];
-                if (videoPtList.indexOf(pt) !== -1) { fbMap.get(pt).push(l); }
-                continue;
-            }
-            otherVideoLines.push(l);
-        }
-
-        function ptWeight(pt) {
-            const c = (ptToCodec.get(pt) || '').toLowerCase();
-            if (c === 'h264' || c === 'avc') return 0;
-            if (c === 'vp8') return 10;
-            if (c === 'vp9') return 20;
-            if (c === 'av1') return 30;
-            return 50;
-        }
-
-        const isForbiddenCodec = (c) => /^(red|ulpfec|flexfec|rtx)$/i.test(c || '');
-        const sortedPts = videoPtList
-            .filter(pt => !isForbiddenCodec(ptToCodec.get(pt) || ''))
-            .sort((a, b) => ptWeight(a) - ptWeight(b));
-        const finalPts = sortedPts.filter(pt => rtpmapMap.has(pt));
-        if (finalPts.length === 0) return desc;
-
-        const mParts = videoMlineOrig.split(/\s+/);
-        mParts.splice(3, mParts.length - 3, ...finalPts);
-        const newMline = mParts.join(' ');
-
-        const newSection = [newMline];
-        for (const pt of finalPts) {
-            if (rtpmapMap.has(pt)) newSection.push(rtpmapMap.get(pt));
-            const fm = fmtpMap.get(pt); if (fm && fm.length) for (const x of fm) newSection.push(x);
-            const fb = fbMap.get(pt); if (fb && fb.length) for (const x of fb) newSection.push(x);
-        }
-        for (const l of otherVideoLines) newSection.push(l);
-
-        for (let i = 0; i < videoSectionStartIdx; i++) outLines.push(lines[i]);
-        for (const l of newSection) outLines.push(l);
-        let i = videoSectionStartIdx + 1;
-        for (; i < lines.length; i++) {
-            if (lines[i].startsWith('m=')) break;
-        }
-        for (; i < lines.length; i++) outLines.push(lines[i]);
-
-        return { type: desc.type, sdp: outLines.join('\r\n') + '\r\n' };
     }
 
     // ========== 停止 ==========
@@ -675,6 +500,8 @@
         stopKeyFrameLoop();
 
         if (ws && ws.readyState === WebSocket.OPEN) { try { ws.close(); } catch (_) {} ws = null; }
+        if (dc) { try { dc.close(); } catch (_) {} dc = null; }
+        setChatEnabled(false);
         if (pc) { try { pc.close(); } catch (_) {} pc = null; }
 
         if (localStream) {
@@ -682,13 +509,6 @@
             localStream = null;
         }
         $('localVideo').srcObject = null;
-
-        if (captureStream) {
-            captureStream.getTracks().forEach(t => t.stop());
-            captureStream = null;
-        }
-
-        stopCanvasDraw();
         $('btnStart').disabled = false;
     }
 
@@ -701,7 +521,7 @@
     // ========== 初始化 ==========
     document.getElementById('roomIdDisplay').textContent = ROOM_ID;
     log('🚀 屏幕推流器已就绪', 'success');
-    log(`💡 配置: ${CANVAS_W}x${CANVAS_H} @ ${CANVAS_FPS}fps，使用真实音频`, 'info');
+    log(`💡 配置: ${WIDTH}x${HEIGHT} @ ${FPS}fps，使用系统音频`, 'info');
 </script>
 </body>
 </html>
