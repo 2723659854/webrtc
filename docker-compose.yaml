@@ -1,0 +1,51 @@
+version: '3'
+
+services:
+
+  php:
+
+    container_name: php_webrtc
+
+    restart: always
+
+    image: rtmp_server_php
+
+    build:
+
+      context: ./
+
+      dockerfile: Dockerfile
+
+    ports:
+
+      # WebSocket / HTTP 信令
+      - "8088:8088/tcp"
+      # WebRTC ICE / DTLS / SRTP 媒体
+      - "8089:8089/udp"
+      # STUN
+      - "3478:3478/udp"
+
+    volumes:
+      - ./:/usr/src/myapp
+
+    tty: true
+
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+    sysctls:
+      net.core.somaxconn: 65535
+      net.ipv4.tcp_max_syn_backlog: 65535
+      net.ipv4.tcp_tw_reuse: 1
+      net.ipv4.ip_local_port_range: "1024 65535"
+      net.ipv4.tcp_fin_timeout: 15
+
+networks:
+  bridge:
+    driver: host
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
