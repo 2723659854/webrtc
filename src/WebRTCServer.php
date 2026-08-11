@@ -281,6 +281,13 @@ class WebRTCServer
     /** stun socket连接 */
     private $stunSocket;
 
+    /** ext-event 后端对象均需保持强引用。 */
+    private $eventBase = null;
+    private $eventWatchers = [];
+    private $clientEvents = [];
+    private $eventTimer = null;
+    private $eventBackendActive = false;
+
     /**
      * 客户端连接（public，便于在 onPublisher/onSubscriber/自定义事件里直接读写 PT/SSRC/UDP 地址等底层状态，
      * 与原 server.php 的"公开 client 状态表"的使用习惯保持一致）。
@@ -2527,6 +2534,16 @@ class WebRTCServer
         if (!isset($this->clients[$id])) return;
         $id = (int)$id;
 
+        if (isset($this->clientEvents[$id])) {
+            try {
+                $this->clientEvents[$id]->del();
+                $this->clientEvents[$id]->free();
+            } catch (\Throwable $e) {
+                $this->_log_std("Client {$id} event cleanup exception: " . $e->getMessage() . "\n");
+            }
+            unset($this->clientEvents[$id]);
+        }
+
         $_snap = $this->clients[$id];
         $_role     = (string)($_snap['meta']['role'] ?? '?');
         $_streamId = (string)($_snap['meta']['streamId'] ?? '');
@@ -2824,25 +2841,33 @@ class WebRTCServer
      */
     private function runEventLoop()
     {
-        $_dbgObsReport = static function (string $hypothesisId, string $location, string $msg, array $data): void {
-        };
+        if (PHP_OS_FAMILY === 'Linux' && extension_loaded('event') && class_exists('EventBase') && class_exists('Event')) {
+            if ($this->initializeEventBackend()) {
+                $this->_log_std("WebRTC server IO model: epoll\n");
+                try {
+                    $this->eventBase->loop();
+                } catch (\Throwable $e) {
+                    $this->_log_std("EventBase loop exception: " . $e->getMessage() . "\n");
+                }
+                $this->_log_std("EventBase loop exited; server stopped without select fallback.\n");
+                $this->cleanupEventBackend();
+                return;
+            }
+        }
 
+        $this->_log_std("WebRTC server IO model: select\n");
+        $this->runSelectEventLoop();
+    }
+
+    private function runSelectEventLoop()
+    {
         while (true) {
-
             $this->_dbgPerfLoopIteration(microtime(true));
             $readStreams = [$this->wsServer];
-
-            if ($this->udpSocket && is_resource($this->udpSocket)) {
-                $readStreams[] = $this->udpSocket;
-            }
-            if ($this->stunSocket && is_resource($this->stunSocket)) {
-                $readStreams[] = $this->stunSocket;
-            }
-
+            if ($this->udpSocket && is_resource($this->udpSocket)) $readStreams[] = $this->udpSocket;
+            if ($this->stunSocket && is_resource($this->stunSocket)) $readStreams[] = $this->stunSocket;
             foreach ($this->clients as $client) {
-                if (isset($client['socket']) && $client['socket'] && is_resource($client['socket'])) {
-                    $readStreams[] = $client['socket'];
-                }
+                if (isset($client['socket']) && $client['socket'] && is_resource($client['socket'])) $readStreams[] = $client['socket'];
             }
 
             $writeStreams = null;
@@ -2852,6 +2877,14 @@ class WebRTCServer
                 usleep(1);
                 continue;
             }
+            $this->processReadyStreams($readStreams, $ready, true);
+        }
+    }
+
+    private function processReadyStreams(array $readStreams, $ready, $runStun = false, $targetClientId = null)
+    {
+        $_dbgObsReport = static function (string $hypothesisId, string $location, string $msg, array $data): void {
+        };
 
             if ($ready > 0 && in_array($this->wsServer, $readStreams, true)) {
                 $clientSocket = @stream_socket_accept($this->wsServer, 0);
@@ -2875,6 +2908,11 @@ class WebRTCServer
 
                     $_total = count($this->clients);
                     $this->_log_std("New client {$clientId} connected (当前总连接数={$_total})\n");
+                    if ($this->eventBackendActive && !$this->registerClientEvent($clientId)) {
+                        $this->_log_std("Client {$clientId} event registration failed; closing client.\n");
+                        $this->removeClient($clientId);
+                        return;
+                    }
                     if (isset($this->onOpen) && is_callable($this->onOpen)) {
                         try {
                             $_cb = $this->onOpen;
@@ -2886,7 +2924,16 @@ class WebRTCServer
                 }
             }
 
-            foreach ($this->clients as $id => $client) {
+            if ($targetClientId === false) {
+                $readyClients = [];
+            } elseif ($targetClientId !== null) {
+                $readyClients = isset($this->clients[(int)$targetClientId])
+                    ? [(int)$targetClientId => $this->clients[(int)$targetClientId]]
+                    : [];
+            } else {
+                $readyClients = $this->clients;
+            }
+            foreach ($readyClients as $id => $client) {
                 if (!isset($client['socket'])) continue;
 
                 if ($client['socket'] && in_array($client['socket'], $readStreams, true)) {
@@ -3336,15 +3383,116 @@ class WebRTCServer
 
             }
 
-            $this->handleSTUN();
-
-            $now = microtime(true);
-            $this->cleanupStaleHttpPlayClients($now);
-
-            $this->sendPublisherReceiverReports($now);
-
+            if ($runStun) {
+                $this->handleSTUN();
+                $now = microtime(true);
+                $this->cleanupStaleHttpPlayClients($now);
+                $this->sendPublisherReceiverReports($now);
+            }
             $this->flushSctpOutboundQueues();
+    }
+
+    private function runLoopMaintenance()
+    {
+        $now = microtime(true);
+        $this->_dbgPerfLoopIteration($now);
+        $this->cleanupStaleHttpPlayClients($now);
+        $this->sendPublisherReceiverReports($now);
+        $this->flushSctpOutboundQueues();
+    }
+
+    private function initializeEventBackend()
+    {
+        try {
+            $baseClass = 'EventBase';
+            $eventClass = 'Event';
+            $base = new $baseClass();
+            if (!method_exists($base, 'getMethod') || strtolower((string)$base->getMethod()) !== 'epoll') {
+                throw new \RuntimeException('EventBase method is not epoll');
+            }
+            $this->eventBase = $base;
+            $readFlags = constant('Event::READ') | constant('Event::PERSIST');
+            $this->eventWatchers['ws'] = new $eventClass($base, $this->wsServer, $readFlags, function () {
+                $this->runEventCallback(function () { $this->processReadyStreams([$this->wsServer], 1, false, false); });
+            });
+            $this->eventWatchers['udp'] = new $eventClass($base, $this->udpSocket, $readFlags, function () {
+                $this->runEventCallback(function () { $this->processReadyStreams([$this->udpSocket], 1, false, false); });
+            });
+            $this->eventWatchers['stun'] = new $eventClass($base, $this->stunSocket, $readFlags, function () {
+                $this->runEventCallback(function () { $this->handleSTUN(); });
+            });
+            foreach ($this->eventWatchers as $event) {
+                if (!$event->add()) throw new \RuntimeException('Failed to add persistent IO event');
+            }
+            $this->eventTimer = new $eventClass($base, -1, constant('Event::TIMEOUT') | constant('Event::PERSIST'), function () {
+                $this->runEventCallback(function () { $this->runLoopMaintenance(); }, false);
+            });
+            if (!$this->eventTimer->add(0.01)) throw new \RuntimeException('Failed to add maintenance timer');
+            $this->eventBackendActive = true;
+            return true;
+        } catch (\Throwable $e) {
+            $this->_log_std("epoll initialization failed, falling back to select: " . $e->getMessage() . "\n");
+            $this->cleanupEventBackend();
+            return false;
         }
+    }
+
+    private function registerClientEvent($clientId)
+    {
+        $clientId = (int)$clientId;
+        if (!$this->eventBackendActive || !isset($this->clients[$clientId]['socket']) || !is_resource($this->clients[$clientId]['socket'])) return false;
+        try {
+            $eventClass = 'Event';
+            $event = new $eventClass($this->eventBase, $this->clients[$clientId]['socket'], constant('Event::READ') | constant('Event::PERSIST'), function () use ($clientId) {
+                $this->runEventCallback(function () use ($clientId) {
+                    if (!isset($this->clients[$clientId]['socket']) || !is_resource($this->clients[$clientId]['socket'])) return;
+                    $this->processReadyStreams([$this->clients[$clientId]['socket']], 1, false, $clientId);
+                });
+            });
+            if (!$event->add()) {
+                try { $event->free(); } catch (\Throwable $e) {}
+                return false;
+            }
+            $this->clientEvents[$clientId] = $event;
+            return true;
+        } catch (\Throwable $e) {
+            $this->_log_std("Client {$clientId} event registration exception: " . $e->getMessage() . "\n");
+            return false;
+        }
+    }
+
+    private function runEventCallback($callback, $flushSctp = true)
+    {
+        try {
+            $callback();
+        } catch (\Throwable $e) {
+            $this->_log_std("Event callback exception: " . $e->getMessage() . "\n");
+        }
+        if ($flushSctp) {
+            try { $this->flushSctpOutboundQueues(); }
+            catch (\Throwable $e) { $this->_log_std("Event callback SCTP flush exception: " . $e->getMessage() . "\n"); }
+        }
+    }
+
+    private function cleanupEventBackend()
+    {
+        foreach ($this->clientEvents as $event) {
+            try { $event->del(); $event->free(); } catch (\Throwable $e) {}
+        }
+        $this->clientEvents = [];
+        foreach ($this->eventWatchers as $event) {
+            try { $event->del(); $event->free(); } catch (\Throwable $e) {}
+        }
+        $this->eventWatchers = [];
+        if ($this->eventTimer) {
+            try { $this->eventTimer->del(); $this->eventTimer->free(); } catch (\Throwable $e) {}
+            $this->eventTimer = null;
+        }
+        if ($this->eventBase) {
+            try { $this->eventBase->stop(); $this->eventBase->free(); } catch (\Throwable $e) {}
+            $this->eventBase = null;
+        }
+        $this->eventBackendActive = false;
     }
 
     /**
