@@ -70,6 +70,13 @@ trait ICE
         }
 
         $answerInfo = $this->generateAnswerSDP($sdp, $remoteIceUfrag, $remoteIcePwd, $remoteSetup, $opts);
+        if (!empty($answerInfo['error'])) {
+            $code = (string)$answerInfo['error'];
+            $message = (string)($answerInfo['message'] ?? 'SDP codec negotiation failed');
+            $this->_log_std("Client {$clientId} handleOffer: {$code}: {$message}\n");
+            $this->sendSignaling((int)$clientId, ['type' => 'error', 'code' => $code, 'message' => $message]);
+            return;
+        }
 
         $localUfrag = (string)($answerInfo['ice-ufrag'] ?? '');
         $localPwd   = (string)($answerInfo['ice-pwd']   ?? '');
@@ -163,6 +170,8 @@ trait ICE
         }
 
         if ($role === 'play') {
+            $this->clients[$clientId]['outVideoPT'] = (int)($this->clients[$clientId]['primaryVideoPT'] ?? 0);
+            $this->clients[$clientId]['outAudioPT'] = (int)($this->clients[$clientId]['primaryAudioPT'] ?? 0);
             $faststart = $this->kickFaststartForSubscriber((int)$clientId);
             $this->_log_std("Client {$clientId} (play) offer 完成 → kickFaststart pliSent=" . ($faststart['pliSent'] ? 'yes' : 'no') . " gopBurst=" . (int)$faststart['gopBurst'] . "\n");
         }

@@ -100,6 +100,16 @@ class WebRTCServer
         }
 
         $answerInfo = $this->generateAnswerSDP($sdp, $remoteIceUfrag, $remoteIcePwd, $remoteSetup, $opts);
+        if (!empty($answerInfo['error'])) {
+            $this->_log_std("[handleHttpOffer] codec negotiation failed role={$role} streamId={$streamId}: " . (string)($answerInfo['message'] ?? $answerInfo['error']) . "\n");
+            unset($this->clients[$clientId]);
+            return [
+                'clientId' => $clientId,
+                'sdp' => '',
+                'error' => (string)$answerInfo['error'],
+                'message' => (string)($answerInfo['message'] ?? 'SDP codec negotiation failed'),
+            ];
+        }
 
         $localUfrag = (string)($answerInfo['ice-ufrag'] ?? '');
         $localPwd   = (string)($answerInfo['ice-pwd']   ?? '');
@@ -3132,7 +3142,7 @@ class WebRTCServer
                                 $ans = $this->handleHttpOffer('push', $streamId, $offer, false, $preferLoopback);
                                 if (empty($ans['sdp'])) {
                                     $status = '400 Bad Request';
-                                    $content = 'Failed to generate SDP Answer';
+                                    $content = (string)($ans['message'] ?? 'Failed to generate SDP Answer');
                                     $response = "HTTP/1.1 {$status}\r\n";
                                     $response .= "Access-Control-Allow-Origin: *\r\n";
                                     $response .= "Content-Type: text/plain\r\n";
@@ -3196,7 +3206,7 @@ class WebRTCServer
                                 $ans = $this->handleHttpOffer('play', $streamId, $offer, true, $preferLoopback);
                                 if (empty($ans['sdp'])) {
                                     $status = '400 Bad Request';
-                                    $content = 'Failed to generate SDP Answer';
+                                    $content = (string)($ans['message'] ?? 'Failed to generate SDP Answer');
                                     $response = "HTTP/1.1 {$status}\r\n";
                                     $response .= "Content-Type: text/plain\r\n";
                                     $response .= "Access-Control-Allow-Origin: *\r\n";

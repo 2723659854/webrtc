@@ -79,42 +79,7 @@ trait SDP
         $videoPayloadTypes = [];
         $audioPayloadTypes = [];
 
-        /** 此处之所以写死了编码为h264 + opus ,因为作为服务端只负责转发不负责转码，那么当推流端和服务器协商一致后，所有拉流端必须使用相同的编码否则无法解码
-         * 而h264+opus也是大多数设备都支持的格式
-         * */
-        $_injectDefaultVideoPTs = function (array &$videoPayloadTypes, array &$audioPayloadTypes,
-                                            bool $hasVideo, bool $hasAudio): void {
-            if ($hasVideo && empty($videoPayloadTypes)) {
-                $videoPayloadTypes = [
-                    123 => ['rtpmap' => 'H264/90000', 'codec' => 'H264', 'clock' => 90000,
-                            'fmtp' => 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f'],
-                    96  => ['rtpmap' => 'H264/90000', 'codec' => 'H264', 'clock' => 90000,
-                            'fmtp' => 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f'],
-                ];
-            }
-
-            if ($hasAudio && empty($audioPayloadTypes)) {
-                $audioPayloadTypes = [
-                    111 => ['rtpmap' => 'opus/48000/2',       'codec' => 'opus',            'clock' => 48000,
-                            'fmtp' => 'minptime=10;useinbandfec=1'],
-                    126 => ['rtpmap' => 'telephone-event/8000','codec' => 'telephone-event', 'clock' => 8000,
-                            'fmtp' => '0-15'],
-                    127 => ['rtpmap' => 'CN/8000',            'codec' => 'cn',              'clock' => 8000],
-                ];
-            }
-        };
-
-        if ($hasVideoOffer || $hasAudioOffer) {
-            $_injectDefaultVideoPTs($videoPayloadTypes, $audioPayloadTypes, $hasVideoOffer, $hasAudioOffer);
-        }
-        /** 这里是兼容只创建datachannel传输消息，而不传输音视频消息的 */
-        if ($forceVideoAudioDefault && !$hasVideoOffer && !$hasAudioOffer) {
-            $hasVideoOffer = true;
-            $hasAudioOffer = true;
-            $_injectDefaultVideoPTs($videoPayloadTypes, $audioPayloadTypes, true, true);
-            $this->_log_std("generateAnswerSDP: [SFU ONLY] force video+audio defaults injected (offer had no m=video/m=audio)\n");
-        }
-        unset($_injectDefaultVideoPTs);
+        // 服务端不转码，只接受 Offer 中明确提供的 H264 + Opus；不注入未出现在 Offer 中的 PT。
 
         $bundleMids = [];
         if (preg_match('/^a=group:BUNDLE\s+(.+)$/m', $offerSdp, $bm)) {
@@ -291,6 +256,49 @@ trait SDP
             $this->_log_std("generateAnswerSDP: hasVideo=$hasVideoOffer hasAudio=$hasAudioOffer isData=$isDataChannel videoDir=$videoOfferDir audioDir=$audioOfferDir\n");
         }
 
+        $selectedH264PT = 0;
+        $selectedH264Info = null;
+        foreach ($videoPayloadTypes as $pt => $info) {
+            if (!is_array($info) || strtolower((string)($info['codec'] ?? '')) !== 'h264' || (int)($info['clock'] ?? 0) !== 90000) {
+                continue;
+            }
+            $fmtp = (string)($info['fmtp'] ?? '');
+            if (!preg_match('/(?:^|;)\s*packetization-mode=1(?:;|$)/i', $fmtp)) {
+                continue;
+            }
+            $selectedH264PT = (int)$pt;
+            $selectedH264Info = $info;
+            break;
+        }
+
+        $selectedOpusPT = 0;
+        $selectedOpusInfo = null;
+        foreach ($audioPayloadTypes as $pt => $info) {
+            if (!is_array($info) || strtolower((string)($info['codec'] ?? '')) !== 'opus' || (int)($info['clock'] ?? 0) !== 48000) {
+                continue;
+            }
+            $rtpmapParts = explode('/', (string)($info['rtpmap'] ?? ''));
+            if (isset($rtpmapParts[2]) && (int)$rtpmapParts[2] !== 2) {
+                continue;
+            }
+            $selectedOpusPT = (int)$pt;
+            $selectedOpusInfo = $info;
+            break;
+        }
+
+        if ($hasVideoOffer && ($selectedH264PT <= 0 || $selectedH264Info === null)) {
+            $this->_log_std("generateAnswerSDP: codec negotiation failed: Offer 缺少 H264/90000 packetization-mode=1\n");
+            return ['error' => 'unsupported-codec', 'message' => 'Offer must include H264/90000 with packetization-mode=1'];
+        }
+        if ($hasAudioOffer && ($selectedOpusPT <= 0 || $selectedOpusInfo === null)) {
+            $this->_log_std("generateAnswerSDP: codec negotiation failed: Offer 缺少 opus/48000/2\n");
+            return ['error' => 'unsupported-codec', 'message' => 'Offer must include opus/48000/2'];
+        }
+        if (!$hasVideoOffer || !$hasAudioOffer) {
+            $this->_log_std("generateAnswerSDP: codec negotiation failed: Offer 必须同时包含 video 和 audio m-line\n");
+            return ['error' => 'unsupported-codec', 'message' => 'Offer must include both H264 video and Opus audio'];
+        }
+
         $mirrorDir = function (string $offerDir): string {
             switch ($offerDir) {
                 case 'sendonly': return 'recvonly';
@@ -357,13 +365,18 @@ trait SDP
 
         if ($hasVideoOffer) {
             $vidSec = "";
-            $fixedVideoPT = 103;
+            $fixedVideoPT = $selectedH264PT;
+            $offerH264Fmtp = (string)($selectedH264Info['fmtp'] ?? '');
+            $answerH264Profile = $h264ProfileLevelId;
+            if (preg_match('/(?:^|;)\s*profile-level-id=([0-9a-f]{6})(?:;|$)/i', $offerH264Fmtp, $profileMatch)) {
+                $answerH264Profile = strtolower($profileMatch[1]);
+            }
             $validPTs = [$fixedVideoPT];
             $fixedVideoInfo = [
                 'rtpmap' => 'H264/90000',
                 'codec'  => 'H264',
                 'clock'  => 90000,
-                'fmtp'   => 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=' . $h264ProfileLevelId,
+                'fmtp'   => 'level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=' . $answerH264Profile,
             ];
             $validPTInfo = [$fixedVideoPT => $fixedVideoInfo];
             $videoPTSet = [$fixedVideoPT => $fixedVideoInfo];
@@ -407,7 +420,7 @@ trait SDP
             $vidSec .= "a=ssrc:{$mainSsrc} mslabel:{$mslabel}\r\n";
             $vidSec .= "a=ssrc:{$mainSsrc} label:{$label}\r\n";
             $vidSec .= "a=rtpmap:{$fixedVideoPT} H264/90000\r\n";
-            $vidSec .= "a=fmtp:{$fixedVideoPT} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={$h264ProfileLevelId}\r\n";
+            $vidSec .= "a=fmtp:{$fixedVideoPT} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={$answerH264Profile}\r\n";
             $vidSec .= "a=rtcp-fb:{$fixedVideoPT} nack pli\r\n";
             if (!empty($rtcpFbLines[$fixedVideoPT])) {
                 $_seenRtcpFb = [];
@@ -422,23 +435,18 @@ trait SDP
             }
             $sections['video'] = $vidSec;
             $sectionMid['video'] = $videoMid;
-            $this->_log_std("generateAnswerSDP: [FORCE WRITE-STOP VIDEO PT=103]  忽略 Offer 原视频PT，强制只声明 H264 PT=103（保证和 RTP 转发翻译后的 PT 完全一致）\n");
+            $this->_log_std("generateAnswerSDP: 仅协商 Offer 中的 H264 PT={$fixedVideoPT}, packetization-mode=1, profile-level-id={$answerH264Profile}\n");
         }
 
         if ($hasAudioOffer) {
             $audSec = "";
-            $fixedOpusPT = 111;
-            $fixedTelPT   = 126;
-            $fixedCnPT    = 127;
-            $validAudioPTs = [$fixedOpusPT, $fixedTelPT, $fixedCnPT];
+            $fixedOpusPT = $selectedOpusPT;
+            $validAudioPTs = [$fixedOpusPT];
             $validAudioPTInfo = [
                 $fixedOpusPT => ['rtpmap' => 'opus/48000/2', 'codec' => 'opus', 'clock' => 48000,
                                  'fmtp' => 'minptime=10;useinbandfec=1'],
-                $fixedTelPT  => ['rtpmap' => 'telephone-event/8000', 'codec' => 'telephone-event', 'clock' => 8000,
-                                 'fmtp' => '0-15'],
-                $fixedCnPT   => ['rtpmap' => 'CN/8000', 'codec' => 'cn', 'clock' => 8000],
             ];
-            foreach ($validAudioPTs as $pt) $audioPTSet[$pt] = $validAudioPTInfo[$pt];
+            $audioPTSet = $validAudioPTInfo;
             $audioPayloadTypes = $validAudioPTInfo;
 
             $ptList = implode(' ', $validAudioPTs);
@@ -476,13 +484,10 @@ trait SDP
             $audSec .= "a=ssrc:{$audSsrc} label:{$label}\r\n";
             $audSec .= "a=rtpmap:{$fixedOpusPT} opus/48000/2\r\n";
             $audSec .= "a=fmtp:{$fixedOpusPT} minptime=10;useinbandfec=1\r\n";
-            $audSec .= "a=rtpmap:{$fixedTelPT} telephone-event/8000\r\n";
-            $audSec .= "a=fmtp:{$fixedTelPT} 0-15\r\n";
-            $audSec .= "a=rtpmap:{$fixedCnPT} CN/8000\r\n";
 
             $sections['audio'] = $audSec;
             $sectionMid['audio'] = $audioMid;
-            $this->_log_std("generateAnswerSDP: [FORCE WRITE-STOP AUDIO PT=111]  忽略 Offer 原音频PT，强制声明 Opus=111, telephone-event=126, CN=127（保证和 RTP 转发翻译后的 PT 完全一致）\n");
+            $this->_log_std("generateAnswerSDP: 仅协商 Offer 中的 Opus PT={$fixedOpusPT}\n");
         }
 
         $orderedSections = [];
