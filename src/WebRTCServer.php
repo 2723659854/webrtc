@@ -788,8 +788,22 @@ class WebRTCServer
         }
         unset($subscriber);
         $loop = $this->_dbgMediaPerf['loop'];
-
-
+        $tickCount = (int)($loop['tickCount'] ?? 0);
+        $perfLog = json_encode([
+            'intervalMs'=>($now - (float)$this->_dbgMediaPerf['lastReportAt']) * 1000,
+            'cpu'=>$cpu,
+            'loop'=>[
+                'tickCount'=>$tickCount,
+                'gapAvgUs'=>$tickCount > 0 ? (float)($loop['gapSumUs'] ?? 0) / $tickCount : 0,
+                'gapMaxUs'=>$loop['gapMaxUs'] ?? 0,
+            ],
+            'udpDrain'=>$this->_dbgMediaPerf['udpDrain'] ?? null,
+            'publishers'=>$publishers,
+            'pipeline'=>$pipeline,
+            'subscribers'=>$subscribers,
+            'bursts'=>$this->_dbgMediaPerf['bursts'] ?? [],
+        ], JSON_UNESCAPED_SLASHES);
+        if (is_string($perfLog)) $this->_log_std('[DEBUG media perf] ' . $perfLog . "\n");
 
         $this->_dbgMediaPerf = ['lastReportAt'=>$now,'lastRusage'=>$usage,'loop'=>['lastAt'=>$now,'tickCount'=>0,'gapSumUs'=>0,'gapMaxUs'=>0]];
         foreach ($_obsSubscriberContinuity as $_obsClientId => $_obsLast) {

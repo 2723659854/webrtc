@@ -227,46 +227,6 @@ trait UDP
 
         if ($kind === 'video') $_dbgRewriteNs = (int)(hrtime(true) - $_dbgRewriteStarted);
 
-        if ($kind === 'video') {
-            static $_dbgVideoTimeline = [];
-            if (!isset($_dbgVideoTimeline[$clientId])) {
-                $_dbgVideoTimeline[$clientId] = ['packets'=>0,'markers'=>0,'prevTs'=>null,'prevOutSeq'=>null];
-            }
-            $_dbgTimeline = &$_dbgVideoTimeline[$clientId];
-            $_dbgTimeline['packets']++;
-            $_dbgOutSeq = unpack('n', substr($fwRtp, 2, 2))[1];
-            $_dbgTimestamp = unpack('N', substr($fwRtp, 4, 4))[1];
-            $_dbgMarker = (ord($fwRtp[1]) >> 7) & 0x01;
-            if ($_dbgMarker === 1) $_dbgTimeline['markers']++;
-            $_dbgTimeline['prevTs'] = $_dbgTimestamp;
-            $_dbgTimeline['prevOutSeq'] = $_dbgOutSeq;
-            unset($_dbgTimeline);
-        }
-
-        if ($kind === 'video') {
-            static $_dbgVideoSummary = [];
-            if (!isset($_dbgVideoSummary[$clientId])) {
-                $_dbgVideoSummary[$clientId] = ['packets'=>0,'timestamps'=>[],'markers'=>0,'timestampBackwards'=>0,'seqGaps'=>0,'firstTs'=>null,'lastTs'=>null,'prevTs'=>null,'prevOutSeq'=>null];
-            }
-            $_dbgSummary = &$_dbgVideoSummary[$clientId];
-            $_dbgSummaryTs = unpack('N', substr($fwRtp, 4, 4))[1];
-            $_dbgSummaryOutSeq = unpack('n', substr($fwRtp, 2, 2))[1];
-            $_dbgSummaryMarker = (ord($fwRtp[1]) >> 7) & 0x01;
-            $_dbgSummary['packets']++;
-            $_dbgSummary['timestamps'][(string)$_dbgSummaryTs] = true;
-            $_dbgSummary['markers'] += $_dbgSummaryMarker;
-            if ($_dbgSummary['firstTs'] === null) $_dbgSummary['firstTs'] = $_dbgSummaryTs;
-            if ($_dbgSummary['prevTs'] !== null && ((($_dbgSummaryTs - $_dbgSummary['prevTs']) & 0xFFFFFFFF) > 0x80000000)) $_dbgSummary['timestampBackwards']++;
-            if ($_dbgSummary['prevOutSeq'] !== null && $_dbgSummaryOutSeq !== (($_dbgSummary['prevOutSeq'] + 1) & 0xFFFF)) $_dbgSummary['seqGaps']++;
-            $_dbgSummary['lastTs'] = $_dbgSummaryTs;
-            $_dbgSummary['prevTs'] = $_dbgSummaryTs;
-            $_dbgSummary['prevOutSeq'] = $_dbgSummaryOutSeq;
-            if ($_dbgSummary['packets'] === 500) {
-                $_dbgVideoSummary[$clientId] = ['packets'=>0,'timestamps'=>[],'markers'=>0,'timestampBackwards'=>0,'seqGaps'=>0,'firstTs'=>null,'lastTs'=>null,'prevTs'=>$_dbgSummaryTs,'prevOutSeq'=>$_dbgSummaryOutSeq];
-            }
-            unset($_dbgSummary);
-        }
-
         if ($kind === 'audio' || $kind === 'video') {
             static $_dbgRtpExtmapRouteCount = [];
             $_dbgRouteKey = $clientId . ':' . $kind;
@@ -314,37 +274,6 @@ trait UDP
                     break;
                 }
             }
-        }
-
-        try {
-            $_dbgPaddingB0 = ord($fwRtp[0]);
-            $_dbgPaddingPBit = ($_dbgPaddingB0 >> 5) & 0x1;
-            $_dbgPaddingCc = $_dbgPaddingB0 & 0x0F;
-            $_dbgPaddingHdrLen = 12 + (4 * $_dbgPaddingCc);
-            if ((($_dbgPaddingB0 >> 4) & 0x1) === 1 && strlen($fwRtp) >= $_dbgPaddingHdrLen + 4) {
-                $_dbgPaddingExtWords = unpack('n', substr($fwRtp, $_dbgPaddingHdrLen + 2, 2))[1];
-                $_dbgPaddingHdrLen += 4 + (4 * $_dbgPaddingExtWords);
-            }
-            $_dbgPaddingPktLen = strlen($fwRtp);
-            $_dbgPaddingRawPayloadLen = $_dbgPaddingPktLen - $_dbgPaddingHdrLen;
-            $_dbgPaddingLastByte = $_dbgPaddingPktLen > 0 ? ord($fwRtp[$_dbgPaddingPktLen - 1]) : null;
-            $_dbgPaddingCount = $_dbgPaddingPBit === 1 ? $_dbgPaddingLastByte : 0;
-            $_dbgPaddingValid = $_dbgPaddingPBit === 0 || ($_dbgPaddingCount !== null && $_dbgPaddingCount > 0 && $_dbgPaddingCount <= $_dbgPaddingRawPayloadLen);
-            $_dbgPaddingEffectivePayloadLen = $_dbgPaddingValid ? ($_dbgPaddingRawPayloadLen - ($_dbgPaddingPBit === 1 ? $_dbgPaddingCount : 0)) : $_dbgPaddingRawPayloadLen;
-            if ($_dbgPaddingPBit === 1 && $_dbgPaddingValid && $_dbgPaddingEffectivePayloadLen === 0) {
-                static $_dbgPurePaddingJ = [];
-                $_dbgPaddingNow = microtime(true);
-                if (!isset($_dbgPurePaddingJ[$clientId])) $_dbgPurePaddingJ[$clientId] = ['count'=>0,'immediate'=>0,'lastReport'=>$_dbgPaddingNow];
-                $_dbgPurePaddingJ[$clientId]['count']++;
-                $_dbgPaddingImmediate = $_dbgPurePaddingJ[$clientId]['immediate'] < 3;
-                $_dbgPaddingPeriodic = !$_dbgPaddingImmediate && ($_dbgPaddingNow - $_dbgPurePaddingJ[$clientId]['lastReport']) >= 1.0;
-                if ($_dbgPaddingImmediate || $_dbgPaddingPeriodic) {
-                if ($_dbgPaddingImmediate) $_dbgPurePaddingJ[$clientId]['immediate']++;
-
-                if ($_dbgPaddingPeriodic || ($_dbgPaddingImmediate && $_dbgPurePaddingJ[$clientId]['immediate'] === 3)) { $_dbgPurePaddingJ[$clientId]['count']=0; $_dbgPurePaddingJ[$clientId]['lastReport']=$_dbgPaddingNow; }
-                }
-            }
-        } catch (\Throwable $_dbgPaddingError) {
         }
 
         $_dbgProtectStarted = $kind === 'video' ? hrtime(true) : 0;
@@ -849,65 +778,6 @@ trait UDP
                 'v'=>$v,'pt'=>$pt,'seq'=>$seq,'ts'=>$ts,'ssrc'=>$ssrcVal,
                 'hdrLen'=>$hdrLen,'payloadLen'=>strlen($plainRtp)-$hdrLen,
             ];
-
-            $_dbgMeta = is_array($c['meta'] ?? null) ? $c['meta'] : [];
-            $_dbgIsPublisherVideo = (($_dbgMeta['role'] ?? '') === 'push')
-                && (isset($c['videoPTs'][$pt])
-                    || (int)($c['incomingSsrcByKind']['video'] ?? 0) === $ssrcVal
-                    || !isset($c['audioPTs'][$pt]));
-            if ($_dbgIsPublisherVideo) {
-                static $_obsInbound = [];
-                $_obsNow = microtime(true);
-                $_obsKey = $targetClientId . ':' . $ssrcVal;
-                if (!isset($_obsInbound[$_obsKey])) {
-                    $_obsInbound[$_obsKey] = ['lastReportAt'=>$_obsNow,'packetCount'=>0,'bytes'=>0,'markerCount'=>0,'distinctTimestamp'=>0,'gapEvents'=>0,'estimatedLost'=>0,'duplicate'=>0,'outOfOrder'=>0,'firstSeq'=>null,'lastSeq'=>null,'firstTs'=>null,'lastTs'=>null,'previousSeq'=>null,'previousTs'=>null,'completedFrames'=>0,'framesWithoutMarker'=>0,'fuStartWithoutEnd'=>0,'fuEndWithoutStart'=>0,'fuSequenceGap'=>0,'idrFrames'=>0,'sps'=>0,'pps'=>0,'nalTypes'=>[],'frame'=>null];
-                }
-                $_obs = &$_obsInbound[$_obsKey];
-                $_obs['packetCount']++; $_obs['bytes'] += strlen($plainRtp); $_obs['markerCount'] += ($b1 >> 7) & 1;
-                if ($_obs['firstSeq'] === null) { $_obs['firstSeq']=$seq; $_obs['firstTs']=$ts; }
-                if ($_obs['previousTs'] === null || $_obs['previousTs'] !== $ts) $_obs['distinctTimestamp']++;
-                if ($_obs['previousSeq'] !== null) {
-                    $_obsSeqDelta = (($seq - (int)$_obs['previousSeq'] + 0x8000) & 0xFFFF) - 0x8000;
-                    if ($_obsSeqDelta > 1) { $_obs['gapEvents']++; $_obs['estimatedLost'] += $_obsSeqDelta - 1; }
-                    elseif ($_obsSeqDelta === 0) $_obs['duplicate']++;
-                    elseif ($_obsSeqDelta < 0) $_obs['outOfOrder']++;
-                }
-                $_obsB0 = ord($plainRtp[0]); $_obsPacketLen = strlen($plainRtp); $_obsPayloadOffset = 12 + 4 * ($_obsB0 & 0x0F); $_obsPayloadValid = $_obsPayloadOffset <= $_obsPacketLen;
-                if (($_obsB0 & 0x10) !== 0) {
-                    if ($_obsPayloadOffset + 4 <= $_obsPacketLen) { $_obsExtWords=unpack('n', substr($plainRtp,$_obsPayloadOffset+2,2))[1]; $_obsPayloadOffset += 4 + 4*$_obsExtWords; }
-                    else $_obsPayloadValid=false;
-                }
-                $_obsPadding = 0;
-                if (($_obsB0 & 0x20) !== 0 && $_obsPacketLen > $_obsPayloadOffset) { $_obsPadding=ord($plainRtp[$_obsPacketLen-1]); if ($_obsPadding <= 0 || $_obsPadding > ($_obsPacketLen-$_obsPayloadOffset)) $_obsPayloadValid=false; }
-                $_obsPayloadLen = $_obsPayloadValid ? $_obsPacketLen - $_obsPayloadOffset - $_obsPadding : 0;
-                if ($_obs['frame'] !== null && (int)$_obs['frame']['ts'] !== $ts) {
-                    if (empty($_obs['frame']['marker'])) $_obs['framesWithoutMarker']++;
-                    if (!empty($_obs['frame']['fuOpen'])) $_obs['fuStartWithoutEnd']++;
-                    $_obs['frame'] = null;
-                }
-                if ($_obs['frame'] === null) $_obs['frame']=['ts'=>$ts,'marker'=>false,'fuOpen'=>false,'fuType'=>null,'fuLastSeq'=>null,'idr'=>false];
-                if ($_obsPayloadLen > 0) {
-                    $_obsNalType=ord($plainRtp[$_obsPayloadOffset])&0x1F; $_obs['nalTypes'][(string)$_obsNalType]=(int)($_obs['nalTypes'][(string)$_obsNalType]??0)+1;
-                    $_obsNalList=[$_obsNalType];
-                    if ($_obsNalType === 24) { $_obsNalList=[]; for ($_obsP=$_obsPayloadOffset+1,$_obsEnd=$_obsPayloadOffset+$_obsPayloadLen; $_obsP+2<=$_obsEnd;) { $_obsSz=unpack('n',substr($plainRtp,$_obsP,2))[1]; $_obsP+=2; if ($_obsSz<=0||$_obsP+$_obsSz>$_obsEnd) break; $_obsInner=ord($plainRtp[$_obsP])&0x1F; $_obsNalList[]=$_obsInner; $_obs['nalTypes'][(string)$_obsInner]=(int)($_obs['nalTypes'][(string)$_obsInner]??0)+1; $_obsP+=$_obsSz; } }
-                    if ($_obsNalType === 28 && $_obsPayloadLen >= 2) {
-                        $_obsFu=ord($plainRtp[$_obsPayloadOffset+1]); $_obsFuType=$_obsFu&0x1F; $_obsFuStart=($_obsFu&0x80)!==0; $_obsFuEnd=($_obsFu&0x40)!==0;
-                        if ($_obsFuStart) { if (!empty($_obs['frame']['fuOpen'])) $_obs['fuStartWithoutEnd']++; $_obs['frame']['fuOpen']=true; $_obs['frame']['fuType']=$_obsFuType; }
-                        elseif (!$_obsFuEnd && empty($_obs['frame']['fuOpen'])) $_obs['fuEndWithoutStart']++;
-                        if ($_obs['frame']['fuLastSeq'] !== null) { $_obsFuDelta=(($seq-(int)$_obs['frame']['fuLastSeq']+0x8000)&0xFFFF)-0x8000; if ($_obsFuDelta>1) $_obs['fuSequenceGap']++; }
-                        $_obs['frame']['fuLastSeq']=$seq; if ($_obsFuEnd) { if (empty($_obs['frame']['fuOpen'])) $_obs['fuEndWithoutStart']++; $_obs['frame']['fuOpen']=false; } $_obsNalList=[$_obsFuType];
-                    }
-                    foreach ($_obsNalList as $_obsType) { if ($_obsType===5) $_obs['frame']['idr']=true; elseif ($_obsType===7) $_obs['sps']++; elseif ($_obsType===8) $_obs['pps']++; }
-                }
-                if ((($b1 >> 7) & 1) === 1) { $_obs['completedFrames']++; $_obs['frame']['marker']=true; if (!empty($_obs['frame']['fuOpen'])) $_obs['fuStartWithoutEnd']++; if (!empty($_obs['frame']['idr'])) $_obs['idrFrames']++; $_obs['frame']=null; }
-                $_obs['lastSeq']=$seq; $_obs['lastTs']=$ts; $_obs['previousSeq']=$seq; $_obs['previousTs']=$ts;
-                if (($_obsNow-(float)$_obs['lastReportAt'])>=1.0) {
-                    $_obsData=$_obs; unset($_obsData['frame'],$_obsData['previousSeq'],$_obsData['previousTs'],$_obsData['lastReportAt']); $_obsData += ['clientId'=>(int)$targetClientId,'streamId'=>(string)($_dbgMeta['streamId']??''),'ssrc'=>(int)$ssrcVal,'pt'=>(int)$pt,'fps'=>(int)$_obs['markerCount'],'intervalMs'=>(int)(($_obsNow-(float)$_obs['lastReportAt'])*1000)];
-
-                    $_obsFrame=$_obs['frame']; $_obsPrevSeq=$_obs['previousSeq']; $_obsPrevTs=$_obs['previousTs']; $_obsInbound[$_obsKey]=['lastReportAt'=>$_obsNow,'packetCount'=>0,'bytes'=>0,'markerCount'=>0,'distinctTimestamp'=>0,'gapEvents'=>0,'estimatedLost'=>0,'duplicate'=>0,'outOfOrder'=>0,'firstSeq'=>null,'lastSeq'=>null,'firstTs'=>null,'lastTs'=>null,'previousSeq'=>$_obsPrevSeq,'previousTs'=>$_obsPrevTs,'completedFrames'=>0,'framesWithoutMarker'=>0,'fuStartWithoutEnd'=>0,'fuEndWithoutStart'=>0,'fuSequenceGap'=>0,'idrFrames'=>0,'sps'=>0,'pps'=>0,'nalTypes'=>[],'frame'=>$_obsFrame];
-                }
-                unset($_obs);
-            }
 
             $srtpInCounter = (int)($c['_srtpInCounter'] ?? 0);
             if (($srtpInCounter % 3000) === 0) {
