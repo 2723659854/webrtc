@@ -119,10 +119,9 @@ class WebRTCServer
         }
 
         $_dbgOfferH264 = [];
-        $_dbgOfferVideoMLine = '';
+
         if (preg_match('/(^m=video[^\r\n]*[\s\S]*?)(?=^m=|\z)/m', $sdp, $_dbgVideoOfferMatch)) {
             $_dbgVideoSection = $_dbgVideoOfferMatch[1];
-            if (preg_match('/^m=video[^\r\n]*/m', $_dbgVideoSection, $_dbgMLineMatch)) $_dbgOfferVideoMLine = trim($_dbgMLineMatch[0]);
             $_dbgRtpmapByPt = [];
             $_dbgFmtpByPt = [];
             if (preg_match_all('/^a=rtpmap:(\d+)\s+([^\r\n]+)/mi', $_dbgVideoSection, $_dbgRtpmapMatches, PREG_SET_ORDER)) {
@@ -647,169 +646,6 @@ class WebRTCServer
     private $_actualPrimaryByStreamKind = [];
     /** @var array<string,float> VP8 关键帧 TS 去重，key=streamId，value=RTP timestamp(90kHz) */
     private $_vp8LastKfTsByStream = [];
-
-    private $_dbgMediaPerf = [];
-
-    private function _dbgPerfPipelineStage(string $streamId, string $stage, int $elapsedNs, int $bytes = 0, int $targetCount = 0): void
-    {
-        if (!isset($this->_dbgMediaPerf['pipeline'][$streamId])) {
-            $this->_dbgMediaPerf['pipeline'][$streamId] = ['streamId'=>$streamId,'stages'=>[]];
-        }
-        if (!isset($this->_dbgMediaPerf['pipeline'][$streamId]['stages'][$stage])) {
-            $this->_dbgMediaPerf['pipeline'][$streamId]['stages'][$stage] = ['count'=>0,'bytes'=>0,'targetCountSum'=>0,'nsSum'=>0,'nsMax'=>0];
-        }
-        $metric = &$this->_dbgMediaPerf['pipeline'][$streamId]['stages'][$stage];
-        $metric['count']++;
-        $metric['bytes'] += $bytes;
-        $metric['targetCountSum'] += $targetCount;
-        $metric['nsSum'] += $elapsedNs;
-        if ($elapsedNs > $metric['nsMax']) $metric['nsMax'] = $elapsedNs;
-        unset($metric);
-    }
-
-    private function _dbgPerfPublisherInbound(int $clientId, string $streamId, string $kind, int $bytes, int $timestamp, int $seq, int $marker): void
-    {
-        if (!isset($this->_dbgMediaPerf['publishers'][$clientId])) {
-            $this->_dbgMediaPerf['publishers'][$clientId] = ['clientId'=>$clientId,'streamId'=>$streamId,'video'=>['packetCount'=>0,'markerCount'=>0,'distinctTimestampCount'=>0,'seqGap'=>0,'bytes'=>0,'lastTimestamp'=>null,'lastSeq'=>null],'audio'=>['packetCount'=>0,'bytes'=>0]];
-        }
-        $publisher = &$this->_dbgMediaPerf['publishers'][$clientId];
-        if ($kind === 'video') {
-            $video = &$publisher['video'];
-            $video['packetCount']++;
-            $video['markerCount'] += $marker;
-            $video['bytes'] += $bytes;
-            if ($video['lastTimestamp'] === null || $video['lastTimestamp'] !== $timestamp) $video['distinctTimestampCount']++;
-            if ($video['lastSeq'] !== null && $seq !== (($video['lastSeq'] + 1) & 0xFFFF)) $video['seqGap']++;
-            $video['lastTimestamp'] = $timestamp;
-            $video['lastSeq'] = $seq;
-            unset($video);
-        } elseif ($kind === 'audio') {
-            $publisher['audio']['packetCount']++;
-            $publisher['audio']['bytes'] += $bytes;
-        }
-        unset($publisher);
-    }
-
-    private function _dbgPerfSubscriberVideo(int $clientId, int $bytes, int $rewriteNs, int $protectNs, int $sendNs, bool $ok, ?int $seq = null, ?int $timestamp = null, int $marker = 0): void
-    {
-        if (!isset($this->_dbgMediaPerf['subscribers'][$clientId])) {
-            $this->_dbgMediaPerf['subscribers'][$clientId] = ['clientId'=>$clientId,'packetCount'=>0,'bytes'=>0,'markers'=>0,'seqGaps'=>0,'timestampBackwards'=>0,'sendFailure'=>0,'rewriteNsSum'=>0,'rewriteNsMax'=>0,'protectNsSum'=>0,'protectNsMax'=>0,'sendNsSum'=>0,'sendNsMax'=>0,'lastSeq'=>null,'lastTimestamp'=>null];
-        }
-        $subscriber = &$this->_dbgMediaPerf['subscribers'][$clientId];
-        $subscriber['packetCount']++;
-        $subscriber['bytes'] += $bytes;
-        $subscriber['markers'] += $marker;
-        if ($seq !== null && $subscriber['lastSeq'] !== null) {
-            $delta = (($seq - (int)$subscriber['lastSeq'] + 0x8000) & 0xFFFF) - 0x8000;
-            if ($delta > 1) $subscriber['seqGaps']++;
-        }
-        if ($timestamp !== null && $subscriber['lastTimestamp'] !== null) {
-            $tsDelta = (($timestamp - (int)$subscriber['lastTimestamp']) & 0xFFFFFFFF);
-            if ($tsDelta > 0x80000000) $subscriber['timestampBackwards']++;
-        }
-        if ($seq !== null) $subscriber['lastSeq'] = $seq;
-        if ($timestamp !== null) $subscriber['lastTimestamp'] = $timestamp;
-        $subscriber['rewriteNsSum'] += $rewriteNs;
-        if ($rewriteNs > $subscriber['rewriteNsMax']) $subscriber['rewriteNsMax'] = $rewriteNs;
-        $subscriber['protectNsSum'] += $protectNs;
-        if ($protectNs > $subscriber['protectNsMax']) $subscriber['protectNsMax'] = $protectNs;
-        $subscriber['sendNsSum'] += $sendNs;
-        if ($sendNs > $subscriber['sendNsMax']) $subscriber['sendNsMax'] = $sendNs;
-        if (!$ok) $subscriber['sendFailure']++;
-        unset($subscriber);
-    }
-
-    private function _dbgPerfBurstEvent(string $streamId, string $type): void
-    {
-        if (!isset($this->_dbgMediaPerf['bursts'][$streamId])) $this->_dbgMediaPerf['bursts'][$streamId] = ['streamId'=>$streamId,'idrCount'=>0,'pliCount'=>0,'gopBurstCount'=>0];
-        $key = $type . 'Count';
-        $this->_dbgMediaPerf['bursts'][$streamId][$key]++;
-    }
-
-    private function _dbgPerfLoopIteration(float $now): void
-    {
-        if (!isset($this->_dbgMediaPerf['loop'])) {
-            $this->_dbgMediaPerf['loop'] = ['lastAt'=>$now,'tickCount'=>0,'gapSumUs'=>0,'gapMaxUs'=>0];
-            $this->_dbgMediaPerf['lastReportAt'] = $now;
-            $this->_dbgMediaPerf['lastRusage'] = function_exists('getrusage') ? @getrusage() : null;
-        }
-        $loop = &$this->_dbgMediaPerf['loop'];
-        $gapUs = (int)(($now - (float)$loop['lastAt']) * 1000000);
-        if ($gapUs < 0) $gapUs = 0;
-        $loop['lastAt'] = $now;
-        $loop['tickCount']++;
-        $loop['gapSumUs'] += $gapUs;
-        if ($gapUs > $loop['gapMaxUs']) $loop['gapMaxUs'] = $gapUs;
-
-        if ($gapUs >= 250000) {
-            $pushClients = [];
-            foreach ($this->clients as $clientId => $client) {
-                if (($client['meta']['role'] ?? '') === 'push') $pushClients[] = (int)$clientId;
-            }
-            if ($pushClients) {
-                $this->_log_std("[DEBUG event loop stall] gapMs=" . number_format($gapUs / 1000, 1, '.', '')
-                    . " pushClients=" . implode(',', $pushClients) . "\n");
-            }
-        }
-
-        unset($loop);
-
-        if (($now - (float)$this->_dbgMediaPerf['lastReportAt']) < 1.0) return;
-        $usage = function_exists('getrusage') ? @getrusage() : null;
-        $previousUsage = $this->_dbgMediaPerf['lastRusage'] ?? null;
-        $cpu = null;
-        if (is_array($usage) && is_array($previousUsage)) {
-            $cpu = ['userDeltaMs'=>(($usage['ru_utime.tv_sec'] ?? 0)-($previousUsage['ru_utime.tv_sec'] ?? 0))*1000+(($usage['ru_utime.tv_usec'] ?? 0)-($previousUsage['ru_utime.tv_usec'] ?? 0))/1000,'systemDeltaMs'=>(($usage['ru_stime.tv_sec'] ?? 0)-($previousUsage['ru_stime.tv_sec'] ?? 0))*1000+(($usage['ru_stime.tv_usec'] ?? 0)-($previousUsage['ru_stime.tv_usec'] ?? 0))/1000];
-        }
-        $publishers = array_values($this->_dbgMediaPerf['publishers'] ?? []);
-        foreach ($publishers as &$publisher) unset($publisher['video']['lastTimestamp'], $publisher['video']['lastSeq']);
-        unset($publisher);
-        $pipeline = array_values($this->_dbgMediaPerf['pipeline'] ?? []);
-        foreach ($pipeline as &$streamPipeline) {
-            foreach ($streamPipeline['stages'] as &$stage) {
-                $stage['msSum'] = $stage['nsSum'] / 1000000;
-                $stage['msMax'] = $stage['nsMax'] / 1000000;
-                unset($stage['nsSum'], $stage['nsMax']);
-            }
-            unset($stage);
-        }
-        unset($streamPipeline);
-        $subscribers = array_values($this->_dbgMediaPerf['subscribers'] ?? []);
-        $_obsSubscriberContinuity = [];
-        foreach ($subscribers as &$subscriber) {
-            $_obsSubscriberContinuity[(int)$subscriber['clientId']] = ['lastSeq'=>$subscriber['lastSeq'],'lastTimestamp'=>$subscriber['lastTimestamp']];
-            $subscriber['rewriteMsSum'] = $subscriber['rewriteNsSum'] / 1000000;
-            $subscriber['rewriteMsMax'] = $subscriber['rewriteNsMax'] / 1000000;
-            $subscriber['protectMsSum'] = $subscriber['protectNsSum'] / 1000000;
-            $subscriber['protectMsMax'] = $subscriber['protectNsMax'] / 1000000;
-            $subscriber['sendMsSum'] = $subscriber['sendNsSum'] / 1000000;
-            $subscriber['sendMsMax'] = $subscriber['sendNsMax'] / 1000000;
-            unset($subscriber['rewriteNsSum'], $subscriber['rewriteNsMax'], $subscriber['protectNsSum'], $subscriber['protectNsMax'], $subscriber['sendNsSum'], $subscriber['sendNsMax'], $subscriber['lastSeq'], $subscriber['lastTimestamp']);
-        }
-        unset($subscriber);
-        $loop = $this->_dbgMediaPerf['loop'];
-        $tickCount = (int)($loop['tickCount'] ?? 0);
-        $perfLog = json_encode([
-            'intervalMs'=>($now - (float)$this->_dbgMediaPerf['lastReportAt']) * 1000,
-            'cpu'=>$cpu,
-            'loop'=>[
-                'tickCount'=>$tickCount,
-                'gapAvgUs'=>$tickCount > 0 ? (float)($loop['gapSumUs'] ?? 0) / $tickCount : 0,
-                'gapMaxUs'=>$loop['gapMaxUs'] ?? 0,
-            ],
-            'udpDrain'=>$this->_dbgMediaPerf['udpDrain'] ?? null,
-            'publishers'=>$publishers,
-            'pipeline'=>$pipeline,
-            'subscribers'=>$subscribers,
-            'bursts'=>$this->_dbgMediaPerf['bursts'] ?? [],
-        ], JSON_UNESCAPED_SLASHES);
-        if (is_string($perfLog)) $this->_log_std('[DEBUG media perf] ' . $perfLog . "\n");
-
-        $this->_dbgMediaPerf = ['lastReportAt'=>$now,'lastRusage'=>$usage,'loop'=>['lastAt'=>$now,'tickCount'=>0,'gapSumUs'=>0,'gapMaxUs'=>0]];
-        foreach ($_obsSubscriberContinuity as $_obsClientId => $_obsLast) {
-            $this->_dbgMediaPerf['subscribers'][$_obsClientId] = ['clientId'=>$_obsClientId,'packetCount'=>0,'bytes'=>0,'markers'=>0,'seqGaps'=>0,'timestampBackwards'=>0,'sendFailure'=>0,'rewriteNsSum'=>0,'rewriteNsMax'=>0,'protectNsSum'=>0,'protectNsMax'=>0,'sendNsSum'=>0,'sendNsMax'=>0,'lastSeq'=>$_obsLast['lastSeq'],'lastTimestamp'=>$_obsLast['lastTimestamp']];
-        }
-    }
 
     /** udp地址映射表 */
     private $udpAddrMap = [];
@@ -1374,7 +1210,6 @@ class WebRTCServer
     public function forwardRtpToAllSubscribers(string $streamId, string $plainRtp, int $excludeClientId = -1): int
     {
         if ($streamId === '' || !is_string($plainRtp) || strlen($plainRtp) < 12) return 0;
-        $_dbgForwardPrepareStarted = hrtime(true);
         $n = 0;
         $hPT    = ord($plainRtp[1]) & 0x7F;
         $hSSRC  = unpack('N', substr($plainRtp, 8, 4))[1];
@@ -1835,7 +1670,6 @@ class WebRTCServer
                 if ($isKeyFrame) {
                     if (!isset($gc['gopIdrTs']) || (int)$gc['gopIdrTs'] !== $hTs) {
                         $gc['generation'] = (int)($gc['generation'] ?? 0) + 1;
-                        $this->_dbgPerfBurstEvent($streamId, 'idr');
                     }
                     $gc['gop'] = [];
                     if ($codecName === 'h264') {
@@ -1926,9 +1760,6 @@ class WebRTCServer
 
         }
 
-        $_dbgForwardFanoutStarted = hrtime(true);
-        $this->_dbgPerfPipelineStage($streamId, 'forwardPrepare', (int)($_dbgForwardFanoutStarted - $_dbgForwardPrepareStarted), strlen($plainRtp), count($targetIds));
-
         foreach ($targetIds as $id) {
             $id = (int)$id;
             if (!isset($this->clients[$id])) continue;
@@ -1977,7 +1808,6 @@ class WebRTCServer
             }
         }
 
-        $this->_dbgPerfPipelineStage($streamId, 'subscriberFanout', (int)(hrtime(true) - $_dbgForwardFanoutStarted), strlen($plainRtp), count($targetIds));
 
         static $_zeroSubDiag = [];
         $_zeroState = $n === 0;
@@ -2105,15 +1935,6 @@ class WebRTCServer
         }
         if ($pubId === null) return false;
 
-        static $_obsPliEvidence = [];
-        $_obsEvidenceNow = microtime(true);
-        if (!isset($_obsPliEvidence[$streamId])) $_obsPliEvidence[$streamId] = ['count'=>0, 'lastAt'=>0.0];
-        $_obsPliEvidence[$streamId]['count']++;
-        if ($_obsPliEvidence[$streamId]['count'] <= 3 || ($_obsEvidenceNow - $_obsPliEvidence[$streamId]['lastAt']) >= 10.0) {
-            $_obsPliEvidence[$streamId]['lastAt'] = $_obsEvidenceNow;
-            $_obsEvidenceData = ['streamId'=>$streamId,'publisherId'=>$pubId,'resolvedVideoSsrc'=>$pubSsrc,'source'=>$pubSsrcSource,'incomingSsrcByKind'=>(array)($publisher['incomingSsrcByKind'] ?? []),'incomingSsrcByPt'=>(array)($publisher['incomingSsrcByPt'] ?? []),'publisherVideoPtKeys'=>array_keys((array)($publisher['videoPTs'] ?? []))];
-            $this->_log_std('[OBS PLI SSRC POST-FIX] ' . json_encode($_obsEvidenceData) . "\n");
-        }
 
         if ($pubSsrc <= 0) return false;
 
@@ -2140,7 +1961,6 @@ class WebRTCServer
         }
         $ok = $this->protectAndSendRtcp($pubId, $pli);
         if ($ok) {
-            $this->_dbgPerfBurstEvent($streamId, 'pli');
             $gc['lastPliSentTs'] = $nowF;
             $this->_log_std("[秒开 PLI SEND] streamId={$streamId} publisherId={$pubId} videoSsrc={$pubSsrc} rcReady=" . ($rcEmpty?'NO':'yes') . " srtpTxReady=" . ($srtpTxEmpty?'NO':'yes') . " → 浏览器将立即出新IDR\n");
         } else {
@@ -2215,7 +2035,6 @@ class WebRTCServer
         $gopComplete = $n === count($gc['gop']);
         if ($gopComplete && $n > 0 && isset($this->_gopCacheByStream[$streamId], $this->clients[$subscriberId])) {
             $this->clients[$subscriberId]['_liveVidSent'] = true;
-            $this->_dbgPerfBurstEvent($streamId, 'gopBurst');
             $this->_gopCacheByStream[$streamId]['lastBurstGeneration'][$subscriberId] = $generation;
             $this->_gopCacheByStream[$streamId]['lastKfBurstSids'][$subscriberId] = microtime(true);
             unset($this->_gopCacheByStream[$streamId]['_retryKicks'][$subscriberId]);
@@ -2886,7 +2705,6 @@ class WebRTCServer
     private function runSelectEventLoop()
     {
         while (true) {
-            $this->_dbgPerfLoopIteration(microtime(true));
             $readStreams = [$this->wsServer];
             if ($this->udpSocket && is_resource($this->udpSocket)) $readStreams[] = $this->udpSocket;
             if ($this->stunSocket && is_resource($this->stunSocket)) $readStreams[] = $this->stunSocket;
@@ -3384,27 +3202,7 @@ class WebRTCServer
             }
 
             if ($ready > 0 && in_array($this->udpSocket, $readStreams, true)) {
-                $_udpDrainStartedAt = microtime(true);
                 $_udpDrainPackets = $this->drainUdpBurst(64, 0.002);
-                $_udpDrainElapsed = microtime(true) - $_udpDrainStartedAt;
-                if (!isset($this->_dbgMediaPerf['udpDrain'])) {
-                    $this->_dbgMediaPerf['udpDrain'] = ['calls'=>0,'totalPackets'=>0,'maxBatch'=>0,'hitPacketLimit'=>0,'hitTimeLimit'=>0];
-                }
-                $this->_dbgMediaPerf['udpDrain']['calls']++;
-                $this->_dbgMediaPerf['udpDrain']['totalPackets'] += $_udpDrainPackets;
-                if ($_udpDrainPackets > $this->_dbgMediaPerf['udpDrain']['maxBatch']) $this->_dbgMediaPerf['udpDrain']['maxBatch'] = $_udpDrainPackets;
-                if ($_udpDrainPackets >= 64) $this->_dbgMediaPerf['udpDrain']['hitPacketLimit']++;
-                if ($_udpDrainElapsed >= 0.002) $this->_dbgMediaPerf['udpDrain']['hitTimeLimit']++;
-
-                static $_dbgUdpDrainLogAt = 0.0;
-                if ($_udpDrainPackets >= 64 && (microtime(true) - $_dbgUdpDrainLogAt) >= 1.0) {
-                    $_dbgUdpDrainLogAt = microtime(true);
-                    $this->_log_std("[DEBUG UDP drain saturated] packets={$_udpDrainPackets}"
-                        . " elapsedMs=" . number_format($_udpDrainElapsed * 1000, 3, '.', '')
-                        . " packetLimitHits=" . $this->_dbgMediaPerf['udpDrain']['hitPacketLimit']
-                        . " timeLimitHits=" . $this->_dbgMediaPerf['udpDrain']['hitTimeLimit'] . "\n");
-                }
-
             }
 
             if ($runStun) {
@@ -3419,7 +3217,6 @@ class WebRTCServer
     private function runLoopMaintenance()
     {
         $now = microtime(true);
-        $this->_dbgPerfLoopIteration($now);
         $this->cleanupStaleHttpPlayClients($now);
         $this->sendPublisherReceiverReports($now);
         $this->flushSctpOutboundQueues();

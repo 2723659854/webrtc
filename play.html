@@ -222,48 +222,6 @@
             $('sTime').textContent = `${String(Math.floor(sec/60)).padStart(2,'0')}:${String(Math.floor(sec%60)).padStart(2,'0')}`;
             const totalBytes = vBytes + aBytes;
             $('sBitrate').textContent = sec > 2 ? Math.floor(totalBytes * 8 / sec / 1000) : 0;
-
-            // #region debug-point A:video-decode-state
-            let inboundVideo = null;
-            stats.forEach(stat => {
-                if (stat.type === 'inbound-rtp' && stat.kind === 'video') inboundVideo = stat;
-            });
-            const v = $('remoteVideo');
-            fetch('http://127.0.0.1:7777/event', {
-                method: 'POST',
-                body: JSON.stringify({
-                    sessionId: 'play-video-blank',
-                    runId: 'post-fix',
-                    hypothesisId: 'A,B,C,D',
-                    location: 'play.html:updateStats',
-                    msg: '[DEBUG] play video decode state',
-                    data: {
-                        packetsReceived: inboundVideo?.packetsReceived ?? null,
-                        packetsLost: inboundVideo?.packetsLost ?? null,
-                        framesReceived: inboundVideo?.framesReceived ?? null,
-                        framesDecoded: inboundVideo?.framesDecoded ?? null,
-                        keyFramesDecoded: inboundVideo?.keyFramesDecoded ?? null,
-                        framesDropped: inboundVideo?.framesDropped ?? null,
-                        frameWidth: inboundVideo?.frameWidth ?? null,
-                        frameHeight: inboundVideo?.frameHeight ?? null,
-                        codecId: inboundVideo?.codecId ?? null,
-                        statsCodecs: Array.from(stats.values()).filter(s => s.type === 'codec').map(s => ({ id: s.id, payloadType: s.payloadType, mimeType: s.mimeType, sdpFmtpLine: s.sdpFmtpLine })),
-                        receiverCodecs: pc.getReceivers().filter(r => r.track?.kind === 'video').flatMap(r => (r.getParameters().codecs || []).map(c => ({ payloadType: c.payloadType, mimeType: c.mimeType, sdpFmtpLine: c.sdpFmtpLine }))),
-                        remoteVideoSdp: (pc.remoteDescription?.sdp || '').split(/(?=m=)/).find(s => s.startsWith('m=video')) || '',
-                        jitterBufferDelay: inboundVideo?.jitterBufferDelay ?? null,
-                        jitterBufferEmittedCount: inboundVideo?.jitterBufferEmittedCount ?? null,
-                        videoWidth: v.videoWidth,
-                        videoHeight: v.videoHeight,
-                        paused: v.paused,
-                        readyState: v.readyState,
-                        networkState: v.networkState,
-                        currentTime: v.currentTime,
-                        trackStates: v.srcObject ? v.srcObject.getTracks().map(t => ({ kind: t.kind, readyState: t.readyState, muted: t.muted, enabled: t.enabled })) : []
-                    },
-                    ts: Date.now()
-                })
-            }).catch(() => {});
-            // #endregion
         } catch(e) {}
     }
 

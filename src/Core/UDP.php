@@ -124,8 +124,7 @@ trait UDP
             return false;
         }
 
-        $_dbgRewriteStarted = $kind === 'video' ? hrtime(true) : 0;
-        $_dbgRewriteNs = 0;
+
         $fwRtp = $rtp;
         $publisherTimestamp = substr($rtp, 4, 4);
         $origSsrc = 0;
@@ -225,8 +224,7 @@ trait UDP
         $fwRtp[6] = $publisherTimestamp[2];
         $fwRtp[7] = $publisherTimestamp[3];
 
-        if ($kind === 'video') $_dbgRewriteNs = (int)(hrtime(true) - $_dbgRewriteStarted);
-
+        //todo 这一段代码有什么作用
         if ($kind === 'audio' || $kind === 'video') {
             static $_dbgRtpExtmapRouteCount = [];
             $_dbgRouteKey = $clientId . ':' . $kind;
@@ -276,36 +274,25 @@ trait UDP
             }
         }
 
-        $_dbgProtectStarted = $kind === 'video' ? hrtime(true) : 0;
-
         try {
             $srtpOut = $srtpTx->protect($fwRtp);
         } catch (\Throwable $e) {
-
-            if ($kind === 'video' && method_exists($this, '_dbgPerfSubscriberVideo')) $this->_dbgPerfSubscriberVideo($clientId, 0, $_dbgRewriteNs, (int)(hrtime(true) - $_dbgProtectStarted), 0, false);
-
-            $this->_log_std("Client {$clientId} protectAndSendRtp protect() FAIL: " . $e->getMessage() . "\n");
+            $this->_log_std(
+                "Client {$clientId} protectAndSendRtp protect() FAIL: "
+                . $e->getMessage()
+                . "\n"
+            );
             return false;
         }
+
         if (!is_string($srtpOut) || strlen($srtpOut) === 0) {
-
-            if ($kind === 'video' && method_exists($this, '_dbgPerfSubscriberVideo')) $this->_dbgPerfSubscriberVideo($clientId, 0, $_dbgRewriteNs, (int)(hrtime(true) - $_dbgProtectStarted), 0, false);
-
-            $this->_log_std("Client {$clientId} protectAndSendRtp protect() FAIL: empty output\n");
+            $this->_log_std(
+                "Client {$clientId} protectAndSendRtp protect() FAIL: empty output\n"
+            );
             return false;
         }
 
-        $_dbgProtectedAt = $kind === 'video' ? hrtime(true) : 0;
         $sent = $this->sendUDP($clientId, $srtpOut);
-        if ($kind === 'video' && method_exists($this, '_dbgPerfSubscriberVideo')) {
-            $_dbgSentAt = hrtime(true);
-
-            $_obsOutSeq = unpack('n', substr($fwRtp, 2, 2))[1];
-            $_obsOutTimestamp = unpack('N', substr($fwRtp, 4, 4))[1];
-            $_obsOutMarker = (ord($fwRtp[1]) >> 7) & 1;
-            $this->_dbgPerfSubscriberVideo($clientId, strlen($srtpOut), $_dbgRewriteNs, (int)($_dbgProtectedAt - $_dbgProtectStarted), (int)($_dbgSentAt - $_dbgProtectedAt), (bool)$sent, $_obsOutSeq, $_obsOutTimestamp, $_obsOutMarker);
-
-        }
 
         if (!$sent) {
             if (empty($c['_warnedSendUdp'])) {
@@ -643,10 +630,7 @@ trait UDP
             }
 
             if (!$isRtcp) {
-
-                $_dbgUnprotectStarted = hrtime(true);
                 $plainRtp = $srtpRx->unprotect($data);
-                $_dbgUnprotectNs = (int)(hrtime(true) - $_dbgUnprotectStarted);
             }
 
             if ($plainRtcp !== null && $plainRtcp !== false && is_string($plainRtcp) && strlen($plainRtcp) >= 8) {
@@ -833,20 +817,7 @@ trait UDP
                 $hasMeta = true;
             }
             if ($hasMeta && ($meta['role'] ?? '') === 'push' && !empty($meta['streamId']) && method_exists($this, 'forwardRtpToAllSubscribers')) {
-
-                if (isset($_dbgUnprotectNs) && method_exists($this, '_dbgPerfPipelineStage')) {
-                    $this->_dbgPerfPipelineStage((string)$meta['streamId'], 'publisherUnprotect', (int)$_dbgUnprotectNs, strlen($data), 0);
-                }
-                $_dbgForwardStarted = hrtime(true);
-
-                $_dbgKindMedia = isset($c['videoPTs'][$pt]) ? 'video' : (isset($c['audioPTs'][$pt]) ? 'audio' : 'unknown');
-                if (method_exists($this, '_dbgPerfPublisherInbound')) $this->_dbgPerfPublisherInbound((int)$targetClientId, (string)$meta['streamId'], $_dbgKindMedia, strlen($plainRtp), (int)$ts, (int)$seq, ($b1 >> 7) & 1);
-
-                $n = $this->forwardRtpToAllSubscribers((string)$meta['streamId'], $plainRtp, $targetClientId);
-
-                if (method_exists($this, '_dbgPerfPipelineStage')) {
-                    $this->_dbgPerfPipelineStage((string)$meta['streamId'], 'forwardTotal', (int)(hrtime(true) - $_dbgForwardStarted), strlen($plainRtp), (int)$n);
-                }
+                $n = $this->forwardRtpToAllSubscribers((string)$meta['streamId'],$plainRtp,$targetClientId);
 
                 $sfuFwdCounter = (int)($c['_sfuFwdCounter'] ?? 0);
                 if ($n > 0 && ($sfuFwdCounter % 3000) === 0) {
