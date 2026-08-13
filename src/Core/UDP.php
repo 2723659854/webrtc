@@ -224,56 +224,6 @@ trait UDP
         $fwRtp[6] = $publisherTimestamp[2];
         $fwRtp[7] = $publisherTimestamp[3];
 
-        //todo 这一段代码有什么作用
-        if ($kind === 'audio' || $kind === 'video') {
-            static $_dbgRtpExtmapRouteCount = [];
-            $_dbgRouteKey = $clientId . ':' . $kind;
-            $_dbgRtpExtmapRouteCount[$_dbgRouteKey] = (int)($_dbgRtpExtmapRouteCount[$_dbgRouteKey] ?? 0);
-            if ($_dbgRtpExtmapRouteCount[$_dbgRouteKey] < 1) {
-                $_dbgRtpExtmapRouteCount[$_dbgRouteKey]++;
-                $_dbgB0 = ord($fwRtp[0]);
-                $_dbgCc = $_dbgB0 & 0x0F;
-                $_dbgHasExtension = (($_dbgB0 & 0x10) !== 0);
-                $_dbgExtOffset = 12 + (4 * $_dbgCc);
-
-                if ($_dbgHasExtension && strlen($fwRtp) >= $_dbgExtOffset + 4) {
-                    $_dbgProfile = unpack('n', substr($fwRtp, $_dbgExtOffset, 2))[1];
-                    $_dbgWordLength = unpack('n', substr($fwRtp, $_dbgExtOffset + 2, 2))[1];
-                    $_dbgExtData = substr($fwRtp, $_dbgExtOffset + 4, $_dbgWordLength * 4);
-                    if ($_dbgProfile === 0xBEDE) {
-                        $_dbgElementOffset = 0;
-                        $_dbgExtDataLen = strlen($_dbgExtData);
-                        while ($_dbgElementOffset < $_dbgExtDataLen) {
-                            $_dbgElementHeader = ord($_dbgExtData[$_dbgElementOffset++]);
-                            if ($_dbgElementHeader === 0) continue;
-                            $_dbgElementId = ($_dbgElementHeader >> 4) & 0x0F;
-                            if ($_dbgElementId === 15) break;
-                            $_dbgElementLen = ($_dbgElementHeader & 0x0F) + 1;
-                            $_dbgElementData = substr($_dbgExtData, $_dbgElementOffset, $_dbgElementLen);
-                            $_dbgElementOffset += $_dbgElementLen;
-                            if (strlen($_dbgElementData) < $_dbgElementLen) break;
-                        }
-                    }
-                }
-
-                $_dbgRemoteOfferSdp = (string)($c['remoteOfferSdp'] ?? '');
-                $_dbgSections = preg_split('/(?=^m=)/m', $_dbgRemoteOfferSdp, -1, PREG_SPLIT_NO_EMPTY);
-                foreach ($_dbgSections as $_dbgSection) {
-                    if (!preg_match('/^m=' . preg_quote($kind, '/') . '\\s+/m', $_dbgSection)) continue;
-                    preg_match('/^a=(sendonly|recvonly|sendrecv|inactive)\\s*$/m', $_dbgSection, $_dbgDirectionMatch);
-                    $_dbgDirection = $_dbgDirectionMatch[1] ?? 'sendrecv';
-                    if ($_dbgDirection !== 'recvonly' && $_dbgDirection !== 'sendrecv') continue;
-                    if (preg_match_all('/^a=extmap:(\\d+)(?:\\/([^\\s]+))?\\s+([^\\s\\r\\n]+)/m', $_dbgSection, $_dbgExtmapMatches, PREG_SET_ORDER)) {
-                        foreach ($_dbgExtmapMatches as $_dbgExtmapMatch) {
-                            $_dbgExtmap = ['id'=>(int)$_dbgExtmapMatch[1],'uri'=>(string)$_dbgExtmapMatch[3]];
-                            if (!empty($_dbgExtmapMatch[2])) $_dbgExtmap['direction'] = (string)$_dbgExtmapMatch[2];
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-
         try {
             $srtpOut = $srtpTx->protect($fwRtp);
         } catch (\Throwable $e) {
