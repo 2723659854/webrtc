@@ -523,32 +523,6 @@ trait UDP
             $plainRtcp = null;
             if ($isRtcp) {
                 $plainRtcp = $srtpRx->unprotectRtcp($data);
-                $_dbgMetaL = is_array($c['meta'] ?? null) ? $c['meta'] : [];
-                if (in_array(($_dbgMetaL['role'] ?? ''), ['push', 'play'], true)) {
-                    static $_dbgSrtcpL = [];
-                    $_dbgNowL = microtime(true);
-                    if (!isset($_dbgSrtcpL[$targetClientId])) $_dbgSrtcpL[$targetClientId] = ['total'=>0,'ok'=>0,'fail'=>0,'rawPt'=>[],'plainPtFmt'=>[],'immediate'=>0,'lastReport'=>$_dbgNowL];
-                    $_dbgStatsL = &$_dbgSrtcpL[$targetClientId];
-                    $_dbgUnprotectOkL = is_string($plainRtcp) && strlen($plainRtcp) >= 8;
-                    $_dbgRawPtL = strlen($data) >= 2 ? ord($data[1]) : -1;
-                    $_dbgStatsL['total']++; $_dbgStatsL[$_dbgUnprotectOkL ? 'ok' : 'fail']++;
-                    $_dbgStatsL['rawPt'][(string)$_dbgRawPtL] = (int)($_dbgStatsL['rawPt'][(string)$_dbgRawPtL] ?? 0) + 1;
-                    if ($_dbgUnprotectOkL) {
-                        for ($_dbgOffsetL=0, $_dbgPlainLenL=strlen($plainRtcp); ($_dbgOffsetL+4)<=$_dbgPlainLenL;) {
-                            $_dbgPacketLenL = (unpack('n', substr($plainRtcp, $_dbgOffsetL+2, 2))[1]+1)*4;
-                            if ($_dbgPacketLenL < 4 || ($_dbgOffsetL+$_dbgPacketLenL)>$_dbgPlainLenL) break;
-                            $_dbgPtL=ord($plainRtcp[$_dbgOffsetL+1]); $_dbgFmtL=ord($plainRtcp[$_dbgOffsetL])&0x1F; $_dbgKeyL=$_dbgPtL . '/' . $_dbgFmtL;
-                            $_dbgStatsL['plainPtFmt'][$_dbgKeyL]=(int)($_dbgStatsL['plainPtFmt'][$_dbgKeyL]??0)+1;
-                            $_dbgOffsetL += $_dbgPacketLenL;
-                        }
-                    }
-                    $_dbgPeriodicL = ($_dbgNowL - $_dbgStatsL['lastReport']) >= 1.0;
-                    if ($_dbgPeriodicL) {
-                        $_dbgSrtcpL[$targetClientId]=['total'=>0,'ok'=>0,'fail'=>0,'rawPt'=>[],'plainPtFmt'=>[],'immediate'=>0,'lastReport'=>$_dbgNowL];
-                    }
-                    unset($_dbgStatsL);
-                }
-
                 if (is_string($plainRtcp) && strlen($plainRtcp) >= 8
                     && (string)(($c['meta']['role'] ?? '')) === 'push') {
                     for ($_srOffset = 0, $_srCompoundLen = strlen($plainRtcp); ($_srOffset + 4) <= $_srCompoundLen;) {

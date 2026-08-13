@@ -2725,9 +2725,6 @@ class WebRTCServer
 
     private function processReadyStreams(array $readStreams, $ready, $runStun = false, $targetClientId = null)
     {
-        $_dbgObsReport = static function (string $hypothesisId, string $location, string $msg, array $data): void {
-        };
-
             if ($ready > 0 && in_array($this->wsServer, $readStreams, true)) {
                 $clientSocket = @stream_socket_accept($this->wsServer, 0);
                 if ($clientSocket) {
@@ -2746,7 +2743,6 @@ class WebRTCServer
                         '_dbgObsPostWaitReported' => false,
                     ];
 
-                    $_dbgObsReport('E', 'src/WebRTCServer.php:http-accept', 'HTTP client accepted', ['clientId'=>$clientId,'acceptedAtMs'=>(int)($this->clients[$clientId]['_dbgObsAcceptedAt']*1000)]);
 
                     $_total = count($this->clients);
                     $this->_log_std("New client {$clientId} connected (当前总连接数={$_total})\n");
@@ -2783,9 +2779,8 @@ class WebRTCServer
                     if ($chunk === '' || $chunk === false) {
 
                         $_dbgCloseBuffer = (string)($this->clients[$id]['buffer'] ?? '');
-                        $_dbgCloseRequestLine = '';
+
                         if (preg_match('/^([^\r\n]+)/', $_dbgCloseBuffer, $_dbgCloseLineMatch)) $_dbgCloseRequestLine = $_dbgCloseLineMatch[1];
-                        $_dbgObsReport('A,E', 'src/WebRTCServer.php:http-empty-read-close', 'HTTP fread empty before removeClient', ['clientId'=>(int)$id,'durationMs'=>(int)((microtime(true)-(float)($this->clients[$id]['_dbgObsAcceptedAt'] ?? microtime(true)))*1000),'state'=>(string)($this->clients[$id]['state'] ?? ''),'bufferLen'=>strlen($_dbgCloseBuffer),'hasHeaderTerminator'=>strpos($_dbgCloseBuffer, "\r\n\r\n") !== false,'requestLine'=>$_dbgCloseRequestLine]);
 
                         if (isset($this->onClose) && is_callable($this->onClose)) {
                             try {
@@ -2800,33 +2795,12 @@ class WebRTCServer
                     $this->clients[$id]['buffer'] .= $chunk;
 
                     $this->clients[$id]['_dbgObsReadCount'] = (int)($this->clients[$id]['_dbgObsReadCount'] ?? 0) + 1;
-                    if ($this->clients[$id]['_dbgObsReadCount'] <= 3) {
-                        $_dbgChunkPrefix = substr($chunk, 0, 256);
-                        $_dbgPreviousBuffer = substr($this->clients[$id]['buffer'], 0, -strlen($chunk));
-                        $_dbgRedactedPrefix = preg_match('/Authorization\s*:[^\r\n]*$/i', $_dbgPreviousBuffer)
-                            ? '[REDACTED AUTHORIZATION CONTINUATION]'
-                            : preg_replace('/(Authorization\s*:\s*)([^\r\n]*)/i', '$1[REDACTED]', $_dbgChunkPrefix);
-                        $_dbgSafeAscii = preg_replace('/[^\x20-\x7E]/', '.', (string)$_dbgRedactedPrefix);
-                        $_dbgObsReport('A', 'src/WebRTCServer.php:http-fread', 'HTTP fread chunk', ['clientId'=>(int)$id,'readNumber'=>$this->clients[$id]['_dbgObsReadCount'],'chunkLen'=>strlen($chunk),'bufferLen'=>strlen($this->clients[$id]['buffer']),'chunkPrefixHex'=>bin2hex((string)$_dbgRedactedPrefix),'chunkPrefixSafeAscii'=>$_dbgSafeAscii]);
-                    }
 
                     if ($this->clients[$id]['state'] === 'http') {
                         if (strpos($this->clients[$id]['buffer'], "\r\n\r\n") === false) continue;
 
                         $parsed = $this->parseHttpHeaders($this->clients[$id]['buffer']);
                         $headers = $parsed['headers'];
-
-                        if (empty($this->clients[$id]['_dbgObsHeaderReported'])) {
-                            $this->clients[$id]['_dbgObsHeaderReported'] = true;
-                            $_dbgHeaderEnd = strpos($this->clients[$id]['buffer'], "\r\n\r\n");
-                            $_dbgRequestLine = (string)($parsed['requestLine'] ?? '');
-                            $_dbgMethod = ''; $_dbgPath = ''; $_dbgHttpVersion = '';
-                            if (preg_match('#^([A-Z]+)\s+(\S+)\s+HTTP/(\S+)$#', $_dbgRequestLine, $_dbgRequestMatch)) { $_dbgMethod=$_dbgRequestMatch[1]; $_dbgPath=$_dbgRequestMatch[2]; $_dbgHttpVersion=$_dbgRequestMatch[3]; }
-                            $_dbgAuthorization = (string)($headers['authorization'] ?? '');
-                            $_dbgAuthorizationScheme = '';
-                            if ($_dbgAuthorization !== '' && preg_match('/^([^\s]+)/', $_dbgAuthorization, $_dbgAuthMatch)) $_dbgAuthorizationScheme = $_dbgAuthMatch[1];
-                            $_dbgObsReport('B,D', 'src/WebRTCServer.php:http-complete-header', 'First complete HTTP header', ['clientId'=>(int)$id,'requestLine'=>$_dbgRequestLine,'method'=>$_dbgMethod,'path'=>$_dbgPath,'httpVersion'=>$_dbgHttpVersion,'contentLength'=>$headers['content-length'] ?? null,'transferEncoding'=>$headers['transfer-encoding'] ?? null,'expect'=>$headers['expect'] ?? null,'contentType'=>$headers['content-type'] ?? null,'userAgent'=>$headers['user-agent'] ?? null,'accept'=>$headers['accept'] ?? null,'origin'=>$headers['origin'] ?? null,'authorizationPresent'=>$_dbgAuthorization !== '','authorizationScheme'=>$_dbgAuthorizationScheme,'headerEnd'=>$_dbgHeaderEnd,'bodyBytesAvailable'=>strlen($this->clients[$id]['buffer'])-($_dbgHeaderEnd+4)]);
-                        }
 
                         if (!empty($headers['upgrade']) && strtolower($headers['upgrade']) === 'websocket') {
                             $key = $headers['sec-websocket-key'] ?? '';
@@ -2861,8 +2835,6 @@ class WebRTCServer
                         }
                         $preferLoopback = in_array($requestHost, ['127.0.0.1', 'localhost', '::1'], true);
 
-                        if (in_array($method, ['OPTIONS','HEAD','POST','DELETE','PATCH'], true)) $_dbgObsReport('A,C', 'src/WebRTCServer.php:http-route-entry', 'HTTP method entered routing', ['clientId'=>(int)$id,'method'=>$method,'path'=>$urlPath,'routeDecision'=>$method === 'POST' ? 'non-get-head-handler' : 'get-head-handler']);
-
                         $unsafe  = false;
                         foreach (explode('/', ltrim($urlPath, '/')) as $seg) {
                             if ($seg === '..' || $seg === "\0") { $unsafe = true; break; }
@@ -2881,12 +2853,9 @@ class WebRTCServer
                                 $body = substr($this->clients[$id]['buffer'], $hdrEnd + 4);
                             }
                             if ($method === 'POST' && $contentLength > strlen($body)) {
-
                                 if (empty($this->clients[$id]['_dbgObsPostWaitReported'])) {
                                     $this->clients[$id]['_dbgObsPostWaitReported'] = true;
-                                    $_dbgObsReport('B', 'src/WebRTCServer.php:post-body-wait', 'POST waiting for declared body', ['clientId'=>(int)$id,'method'=>$method,'path'=>$urlPath,'contentLength'=>$contentLength,'bodyLength'=>strlen($body),'bufferLen'=>strlen($this->clients[$id]['buffer'])]);
                                 }
-
                                 continue;
                             }
 
@@ -2894,8 +2863,6 @@ class WebRTCServer
                                 $resId = (int)$md[1];
                                 $exists = isset($this->clients[$resId])
                                     && (($this->clients[$resId]['meta']['role'] ?? '') === 'push');
-
-                                $_dbgObsReport('A', 'src/WebRTCServer.php:whip-delete', 'WHIP resource DELETE before publisher removal', ['httpClientId'=>(int)$id,'resourceClientId'=>$resId,'resourceExists'=>$exists,'resourceRole'=>(string)($this->clients[$resId]['meta']['role'] ?? ''),'streamId'=>(string)($this->clients[$resId]['meta']['streamId'] ?? ''),'resourceLastSeenMs'=>isset($this->clients[$resId]['lastSeenAt']) ? (int)((microtime(true)-(float)$this->clients[$resId]['lastSeenAt'])*1000) : null,'userAgent'=>(string)($headers['user-agent'] ?? ''),'requestLine'=>$requestLine]);
                                 $this->_log_std("[DEBUG WHIP DELETE] httpClient={$id} resource={$resId} exists=" . ($exists ? 'yes' : 'no') . " streamId=" . (string)($this->clients[$resId]['meta']['streamId'] ?? '') . " userAgent=" . (string)($headers['user-agent'] ?? '') . "\n");
 
                                 $response = $exists
