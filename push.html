@@ -33,11 +33,6 @@
         .log-box .warn { color: #ff9f1c; }
         .log-box .success { color: #06d6a0; }
         .log-box .error { color: #f72585; }
-        .chat-controls { display: flex; gap: 10px; margin-top: 15px; }
-        .chat-controls input { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #2a2a3e; background: #1a1a2e; color: #e0e0e0; font-size: 0.95em; }
-        .chat-controls input:focus { outline: none; border-color: #4cc9f0; }
-        .chat-controls input:disabled { opacity: 0.4; }
-        .btn-send { background: #06d6a0; color: #000; }
     </style>
 </head>
 <body>
@@ -92,10 +87,6 @@
         <video id="localVideo" autoplay muted playsinline></video>
     </div>
 
-    <div class="chat-controls">
-        <input type="text" id="chatInput" placeholder="输入聊天消息..." disabled>
-        <button class="btn btn-send" id="btnSend" onclick="sendChatMessage()" disabled>发送</button>
-    </div>
     <div class="log-box" id="logBox"></div>
 </div>
 
@@ -107,7 +98,7 @@
     const stunHost = window.location.hostname;
 
     // ========== 状态 ==========
-    let pc = null, ws = null, localStream = null, dc = null;
+    let pc = null, ws = null, localStream = null;
     let isStreaming = false, joined = false;
 
     function $(id) { return document.getElementById(id); }
@@ -128,56 +119,6 @@
         $('btnStart').disabled = starting;
         $('btnStop').disabled = !starting;
     }
-    function setChatEnabled(enabled) {
-        $('chatInput').disabled = !enabled;
-        $('btnSend').disabled = !enabled;
-    }
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-    function bindDataChannel(channel) {
-        if (dc === channel) return;
-        if (dc && dc.readyState !== 'closed') {
-            try { dc.close(); } catch (_) {}
-        }
-        dc = channel;
-        setChatEnabled(false);
-        channel.onopen = () => {
-            if (dc !== channel) return;
-            log('💬 DataChannel 已打开', 'success');
-            setChatEnabled(true);
-        };
-        channel.onmessage = (event) => {
-            if (dc !== channel) return;
-            log(`📥 聊天: ${escapeHtml(String(event.data))}`, 'success');
-        };
-        channel.onerror = (event) => {
-            if (dc !== channel) return;
-            log(`DataChannel 错误: ${escapeHtml(event.error?.message || 'unknown')}`, 'error');
-        };
-        channel.onclose = () => {
-            if (dc !== channel) return;
-            log('DataChannel 已关闭', 'warn');
-            setChatEnabled(false);
-        };
-    }
-    function sendChatMessage() {
-        const input = $('chatInput');
-        const text = input.value.trim();
-        if (!text || !dc || dc.readyState !== 'open') return;
-        dc.send(text);
-        log(`📤 我: ${escapeHtml(text)}`, 'info');
-        input.value = '';
-    }
-    $('chatInput').addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') {
-            event.preventDefault();
-            sendChatMessage();
-        }
-    });
-
     // ========== UI 配置回调 ==========
     function onResChange() {
         const [w, h] = $('resSelect').value.split('x').map(Number);
@@ -358,7 +299,6 @@
 
     async function createPeerConnection() {
         pc = new RTCPeerConnection({ iceServers: [{ urls: `stun:${stunHost}:3478` }] });
-        bindDataChannel(pc.createDataChannel('chat', { ordered: true, id: 0 }));
 
         localStream.getTracks().forEach(track => {
             pc.addTransceiver(track, {
@@ -501,8 +441,6 @@
         stopKeyFrameLoop();
 
         if (ws && ws.readyState === WebSocket.OPEN) { try { ws.close(); } catch (_) {} ws = null; }
-        if (dc) { try { dc.close(); } catch (_) {} dc = null; }
-        setChatEnabled(false);
         if (pc) { try { pc.close(); } catch (_) {} pc = null; }
 
         if (localStream) {
