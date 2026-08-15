@@ -87,48 +87,6 @@
     let startTime = 0, statsTimer = null;
     let _rendered = false, _pendingStream = null, _hasVideoTrack = false;
 
-    // #region debug-point whep-sdp-evidence
-    let _hasLoggedVideoInbound = false;
-    function summarizeSdp(sdp) {
-        const lines = String(sdp || '').split(/\r?\n/);
-        const mediaSections = [];
-        let current = null;
-        lines.forEach(line => {
-            if (line.startsWith('m=')) {
-                current = { mLine: line, lines: [] };
-                mediaSections.push(current);
-            } else if (current) {
-                current.lines.push(line);
-            }
-        });
-
-        const h264 = [];
-        const opus = [];
-        mediaSections.forEach(section => {
-            const mediaType = section.mLine.slice(2).split(/\s+/)[0];
-            if (mediaType === 'video') {
-                section.lines.forEach(line => {
-                    const match = line.match(/^a=rtpmap:(\d+)\s+H264(?:\/|$)/i);
-                    if (!match) return;
-                    const pt = match[1];
-                    const fmtp = section.lines.find(item => item.startsWith(`a=fmtp:${pt} `)) || '(none)';
-                    h264.push(`PT=${pt} fmtp=${fmtp}`);
-                });
-            } else if (mediaType === 'audio') {
-                section.lines.forEach(line => {
-                    const match = line.match(/^a=rtpmap:(\d+)\s+opus(?:\/|$)/i);
-                    if (match) opus.push(match[1]);
-                });
-            }
-        });
-
-        const mLines = mediaSections.map(section => section.mLine);
-        const setup = lines.filter(line => line.startsWith('a=setup:'));
-        const direction = lines.filter(line => /^a=(sendrecv|sendonly|recvonly|inactive)$/.test(line));
-        return `mLines=[${mLines.join(' ; ')}] H264=[${h264.join(' ; ')}] OpusPT=[${opus.join(',')}] application=${mLines.some(line => line.startsWith('m=application '))} setup=[${setup.join(' ; ')}] direction=[${direction.join(' ; ')}]`;
-    }
-    // #endregion
-
     function $(id) { return document.getElementById(id); }
     $('whepUrlInput').value = `${location.origin}/whep/stream_001`;
 
@@ -181,9 +139,6 @@
 
         pc.ontrack = (event) => {
             const t = event.track;
-            // #region debug-point whep-sdp-evidence
-            log(`[WHEP DIAG TRACK] kind=${t.kind} muted=${t.muted} readyState=${t.readyState} streams=${event.streams.length}`, 'debug');
-            // #endregion
             let stream = event.streams?.[0] || _pendingStream || new MediaStream([t]);
             if (t.kind === 'video') { _hasVideoTrack = true; log(`📹 视频轨道收到: ${t.id}`, 'info'); }
             else if (t.kind === 'audio') { log(`🔊 音频轨道收到: ${t.id}`, 'info'); }
@@ -229,21 +184,11 @@
 
             const fullOffer = pc.localDescription;
             log(`📤 发送完整 Offer (含 ICE 候选, len=${fullOffer.sdp.length})`, 'info');
-            // #region debug-point whep-sdp-evidence
-            log(`[WHEP DIAG OFFER] ${summarizeSdp(fullOffer.sdp)}`, 'debug');
-            // #endregion
 
             const response = await fetch(whepUrl, {
                 method: 'POST', headers: { 'Content-Type': 'application/sdp' }, body: fullOffer.sdp
             });
             const responseText = await response.text();
-            // #region debug-point whep-sdp-evidence
-            const diagContentType = response.headers.get('Content-Type') || '';
-            const diagLocation = response.headers.get('Location') || '';
-            log(`[WHEP DIAG HTTP] status=${response.status} contentType=${diagContentType} location=${diagLocation} bodyLen=${responseText.length}`, 'debug');
-            log(`[WHEP DIAG ANSWER] ${summarizeSdp(responseText)}`, 'debug');
-            if (!response.ok) log(`[WHEP DIAG HTTP BODY] ${responseText.slice(0, 300)}`, 'error');
-            // #endregion
 
             if (response.status === 201 || response.status === 200) {
                 const location = response.headers.get('Location');
@@ -253,9 +198,6 @@
 
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: responseText }));
                 log('✅ Answer 已设置', 'success');
-                // #region debug-point whep-sdp-evidence
-                log(`[WHEP DIAG REMOTE] signalingState=${pc.signalingState} iceConnectionState=${pc.iceConnectionState}`, 'debug');
-                // #endregion
 
                 startTime = performance.now();
                 if (statsTimer) clearInterval(statsTimer);
@@ -275,12 +217,6 @@
             stats.forEach(s => {
                 if (s.type === 'inbound-rtp') {
                     if (s.kind === 'video') {
-                        // #region debug-point whep-sdp-evidence
-                        if (!_hasLoggedVideoInbound) {
-                            log(`[WHEP DIAG INBOUND VIDEO] codecId=${s.codecId} packetsReceived=${s.packetsReceived} bytesReceived=${s.bytesReceived} framesReceived=${s.framesReceived} framesDecoded=${s.framesDecoded} packetsLost=${s.packetsLost}`, 'debug');
-                            _hasLoggedVideoInbound = true;
-                        }
-                        // #endregion
                         vPkts += s.packetsReceived || 0; vBytes += s.bytesReceived || 0; if (s.framesPerSecond) fps = Math.max(fps, s.framesPerSecond);
                     }
                     if (s.kind === 'audio') { aPkts += s.packetsReceived || 0; aBytes += s.bytesReceived || 0; }
@@ -299,9 +235,6 @@
 
     async function stopPlay() {
         isPlaying = false; _rendered = false; _pendingStream = null; _hasVideoTrack = false; updateDot(false);
-        // #region debug-point whep-sdp-evidence
-        _hasLoggedVideoInbound = false;
-        // #endregion
         if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
         if (resourceUrl) {
             try { const headers = {}; if (etag) headers['If-Match'] = etag; await fetch(resourceUrl, { method:'DELETE', headers }); log(`🗑️ 释放资源: ${resourceUrl}`, 'info'); } catch(e) { log(`⚠️ 释放失败`, 'warn'); }
