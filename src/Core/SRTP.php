@@ -12,6 +12,7 @@ use Exception;
 class SRTP
 {
     const PROFILE_AES128_CM_SHA1_80 = 0x0001;
+    const USE_OPENSSL_AES_ICM = true;
 
     const LABEL_RTP_ENC  = 0x00;
     const LABEL_RTP_AUTH = 0x01;
@@ -196,6 +197,11 @@ class SRTP
      */
     private function icmXor($counter, $data)
     {
+        if (self::USE_OPENSSL_AES_ICM) {
+            $native = self::_opensslAesIcmXor($this->rtpEncKey, $counter, $data);
+            if ($native !== null) return $native;
+        }
+
         if ($this->rtpEncRoundKeysKey !== $this->rtpEncKey) {
             $this->rtpEncRoundKeys = self::_aes128ExpandKey($this->rtpEncKey);
             $this->rtpEncRoundKeysKey = $this->rtpEncKey;
@@ -262,9 +268,7 @@ class SRTP
         if ($encLen > 0) {
             $counter = $this->buildIcmCounter($h['ssrc'], $packetIndex);
             $cipherPayload = $this->icmXor($counter, substr($rtp, $encStart, $encLen));
-            for ($i = 0; $i < $encLen; $i++) {
-                $srtp[$encStart + $i] = $cipherPayload[$i];
-            }
+            $srtp = substr($rtp, 0, $encStart) . $cipherPayload;
         }
 
         $authInput = $srtp . pack('N', $roc32);
@@ -350,9 +354,7 @@ class SRTP
         if ($encLen > 0) {
             $counter = $this->buildIcmCounter($ssrc, $est);
             $plainPayload = $this->icmXor($counter, substr($srtpBody, $encStart, $encLen));
-            for ($i = 0; $i < $encLen; $i++) {
-                $rtp[$encStart + $i] = $plainPayload[$i];
-            }
+            $rtp = substr($srtpBody, 0, $encStart) . $plainPayload;
         }
 
         $seq = (int)$h['seq'] & 0xFFFF;
@@ -386,7 +388,6 @@ class SRTP
         $encStart = $hdrLen;
         $encLen   = $bodyLen - $encStart;
         $srtcp    = $rtcp;
-
         $packetSrtcpIndex = $this->srtcpIndex;
         $srtcpIndexWord = pack('N', 0x80000000 | $packetSrtcpIndex);
         $this->srtcpIndex = ($this->srtcpIndex + 1) & 0x7FFFFFFF;
@@ -498,6 +499,34 @@ class SRTP
     private function _rtcpIcmXor(string $counter, string $data): string
     {
         return self::_aesIcmXor($this->rtcpEncKey, $counter, $data);
+    }
+
+    private static function _opensslAesIcmXor(string $key16, string $counter16, string $data): ?string
+    {
+        static $verified = null;
+        if ($data === '') return '';
+        if ($verified === false
+            || !function_exists('openssl_encrypt')
+            || strlen($key16) !== 16
+            || strlen($counter16) !== 16) {
+            return null;
+        }
+        $result = @openssl_encrypt(
+            $data,
+            'aes-128-ctr',
+            $key16,
+            OPENSSL_RAW_DATA,
+            $counter16
+        );
+        if (!is_string($result) || strlen($result) !== strlen($data)) {
+            $verified = false;
+            return null;
+        }
+        if ($verified === null) {
+            $verified = hash_equals(self::_aesIcmXor($key16, $counter16, $data), $result);
+            if (!$verified) return null;
+        }
+        return $result;
     }
 
     /**
