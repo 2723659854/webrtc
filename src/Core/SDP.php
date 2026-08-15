@@ -78,6 +78,8 @@ trait SDP
 
         $videoPayloadTypes = [];
         $audioPayloadTypes = [];
+        $videoOfferPTOrder = [];
+        $audioOfferPTOrder = [];
 
         /** 此处之所以写死了编码为h264 + opus ,因为作为服务端只负责转发不负责转码，那么当推流端和服务器协商一致后，所有拉流端必须使用相同的编码否则无法解码
          * 而h264+opus也是大多数设备都支持的格式
@@ -186,7 +188,9 @@ trait SDP
                 $parts = preg_split('/\s+/', trim($mLine[1]));
                 for ($i = 3; $i < count($parts); $i++) {
                     if (ctype_digit($parts[$i])) {
-                        $audioPayloadTypes[(int)$parts[$i]] = [
+                        $pt = (int)$parts[$i];
+                        $audioOfferPTOrder[] = $pt;
+                        $audioPayloadTypes[$pt] = [
                             'rtpmap' => null, 'fmtp' => null, 'codec' => null, 'clock' => 48000
                         ];
                     }
@@ -244,7 +248,9 @@ trait SDP
                 $parts = preg_split('/\s+/', trim($mLine[1]));
                 for ($i = 3; $i < count($parts); $i++) {
                     if (ctype_digit($parts[$i])) {
-                        $videoPayloadTypes[(int)$parts[$i]] = [
+                        $pt = (int)$parts[$i];
+                        $videoOfferPTOrder[] = $pt;
+                        $videoPayloadTypes[$pt] = [
                             'rtpmap' => null, 'fmtp' => null, 'codec' => null, 'clock' => 90000
                         ];
                     }
@@ -355,11 +361,36 @@ trait SDP
         $videoPTSet = [];
         $audioPTSet = [];
 
+        $whepVideoPT = null;
+        $whepVideoInfo = null;
+        if ($isWhep && $hasVideoOffer) {
+            foreach ($videoOfferPTOrder as $pt) {
+                $info = $videoPayloadTypes[$pt] ?? [];
+                $rtpmap = trim((string)($info['rtpmap'] ?? ''));
+                $fmtp = trim((string)($info['fmtp'] ?? ''));
+                if (preg_match('/^H264\/90000(?:\s|$)/i', $rtpmap)
+                    && preg_match('/(?:^|;)\s*packetization-mode\s*=\s*1\s*(?:;|$)/i', $fmtp)) {
+                    $whepVideoPT = $pt;
+                    $whepVideoInfo = [
+                        'rtpmap' => 'H264/90000',
+                        'codec'  => 'H264',
+                        'clock'  => 90000,
+                        'fmtp'   => $fmtp,
+                    ];
+                    break;
+                }
+            }
+            if ($whepVideoPT === null) {
+                $hasVideoOffer = false;
+                $this->_log_std("generateAnswerSDP: [WHEP] reject video: Offer has no H264/90000 PT with packetization-mode=1\n");
+            }
+        }
+
         if ($hasVideoOffer) {
             $vidSec = "";
-            $fixedVideoPT = 103;
+            $fixedVideoPT = $isWhep ? $whepVideoPT : 103;
             $validPTs = [$fixedVideoPT];
-            $fixedVideoInfo = [
+            $fixedVideoInfo = $isWhep ? $whepVideoInfo : [
                 'rtpmap' => 'H264/90000',
                 'codec'  => 'H264',
                 'clock'  => 90000,
@@ -388,7 +419,8 @@ trait SDP
                         if ($extUri === 'http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01'
                             || $extUri === 'urn:ietf:params:rtp-hdrext:transport-wide-cc') continue;
                         $extLines[(int)$m[1]] = $vl;
-                    } elseif (preg_match('/^a=rtcp-fb:(?:\*|\d+)\s+nack\s+pli\s*$/i', $vl)) {
+                    } elseif (preg_match('/^a=rtcp-fb:(\*|\d+)\s+nack\s+pli\s*$/i', $vl, $fbm)
+                        && (!$isWhep || $fbm[1] === '*' || (int)$fbm[1] === $fixedVideoPT)) {
                         if (!isset($rtcpFbLines[$fixedVideoPT])) $rtcpFbLines[$fixedVideoPT] = [];
                         $rtcpFbLines[$fixedVideoPT][] = 'a=rtcp-fb:' . $fixedVideoPT . ' nack pli';
                     }
@@ -407,31 +439,50 @@ trait SDP
             $vidSec .= "a=ssrc:{$mainSsrc} mslabel:{$mslabel}\r\n";
             $vidSec .= "a=ssrc:{$mainSsrc} label:{$label}\r\n";
             $vidSec .= "a=rtpmap:{$fixedVideoPT} H264/90000\r\n";
-            $vidSec .= "a=fmtp:{$fixedVideoPT} level-asymmetry-allowed=1;packetization-mode=1;profile-level-id={$h264ProfileLevelId}\r\n";
-            $vidSec .= "a=rtcp-fb:{$fixedVideoPT} nack pli\r\n";
-            if (!empty($rtcpFbLines[$fixedVideoPT])) {
-                $_seenRtcpFb = [];
-                foreach ($rtcpFbLines[$fixedVideoPT] as $fbl) {
-                    if (!isset($_seenRtcpFb[$fbl])) {
-                        $_seenRtcpFb[$fbl] = true;
-                        if (preg_match('/^a=rtcp-fb:' . $fixedVideoPT . '\s+nack\s+pli\s*$/i', $fbl)) {
-                            continue;
-                        }
-                    }
-                }
+            $vidSec .= "a=fmtp:{$fixedVideoPT} {$fixedVideoInfo['fmtp']}\r\n";
+            if (!$isWhep || !empty($rtcpFbLines[$fixedVideoPT])) {
+                $vidSec .= "a=rtcp-fb:{$fixedVideoPT} nack pli\r\n";
             }
             $sections['video'] = $vidSec;
             $sectionMid['video'] = $videoMid;
-            $this->_log_std("generateAnswerSDP: [FORCE WRITE-STOP VIDEO PT=103]  忽略 Offer 原视频PT，强制只声明 H264 PT=103（保证和 RTP 转发翻译后的 PT 完全一致）\n");
+            if ($isWhep) {
+                $this->_log_std("generateAnswerSDP: [WHEP] selected offered H264 PT={$fixedVideoPT} fmtp={$fixedVideoInfo['fmtp']}\n");
+            } else {
+                $this->_log_std("generateAnswerSDP: [FORCE WRITE-STOP VIDEO PT=103]  忽略 Offer 原视频PT，强制只声明 H264 PT=103（保证和 RTP 转发翻译后的 PT 完全一致）\n");
+            }
+        }
+
+        $whepAudioPT = null;
+        $whepAudioInfo = null;
+        if ($isWhep && $hasAudioOffer) {
+            foreach ($audioOfferPTOrder as $pt) {
+                $info = $audioPayloadTypes[$pt] ?? [];
+                if (preg_match('/^opus\/48000\/2(?:\s|$)/i', trim((string)($info['rtpmap'] ?? '')))) {
+                    $whepAudioPT = $pt;
+                    $whepAudioInfo = [
+                        'rtpmap' => 'opus/48000/2',
+                        'codec'  => 'opus',
+                        'clock'  => 48000,
+                        'fmtp'   => $info['fmtp'] ?? null,
+                    ];
+                    break;
+                }
+            }
+            if ($whepAudioPT === null) {
+                $hasAudioOffer = false;
+                $this->_log_std("generateAnswerSDP: [WHEP] reject audio: Offer has no Opus/48000/2 PT\n");
+            }
         }
 
         if ($hasAudioOffer) {
             $audSec = "";
-            $fixedOpusPT = 111;
+            $fixedOpusPT = $isWhep ? $whepAudioPT : 111;
             $fixedTelPT   = 126;
             $fixedCnPT    = 127;
-            $validAudioPTs = [$fixedOpusPT, $fixedTelPT, $fixedCnPT];
-            $validAudioPTInfo = [
+            $validAudioPTs = $isWhep ? [$fixedOpusPT] : [$fixedOpusPT, $fixedTelPT, $fixedCnPT];
+            $validAudioPTInfo = $isWhep ? [
+                $fixedOpusPT => $whepAudioInfo,
+            ] : [
                 $fixedOpusPT => ['rtpmap' => 'opus/48000/2', 'codec' => 'opus', 'clock' => 48000,
                                  'fmtp' => 'minptime=10;useinbandfec=1'],
                 $fixedTelPT  => ['rtpmap' => 'telephone-event/8000', 'codec' => 'telephone-event', 'clock' => 8000,
@@ -475,14 +526,24 @@ trait SDP
             $audSec .= "a=ssrc:{$audSsrc} mslabel:{$mslabel}\r\n";
             $audSec .= "a=ssrc:{$audSsrc} label:{$label}\r\n";
             $audSec .= "a=rtpmap:{$fixedOpusPT} opus/48000/2\r\n";
-            $audSec .= "a=fmtp:{$fixedOpusPT} minptime=10;useinbandfec=1\r\n";
-            $audSec .= "a=rtpmap:{$fixedTelPT} telephone-event/8000\r\n";
-            $audSec .= "a=fmtp:{$fixedTelPT} 0-15\r\n";
-            $audSec .= "a=rtpmap:{$fixedCnPT} CN/8000\r\n";
+            if ($isWhep) {
+                if (!empty($validAudioPTInfo[$fixedOpusPT]['fmtp'])) {
+                    $audSec .= "a=fmtp:{$fixedOpusPT} {$validAudioPTInfo[$fixedOpusPT]['fmtp']}\r\n";
+                }
+            } else {
+                $audSec .= "a=fmtp:{$fixedOpusPT} minptime=10;useinbandfec=1\r\n";
+                $audSec .= "a=rtpmap:{$fixedTelPT} telephone-event/8000\r\n";
+                $audSec .= "a=fmtp:{$fixedTelPT} 0-15\r\n";
+                $audSec .= "a=rtpmap:{$fixedCnPT} CN/8000\r\n";
+            }
 
             $sections['audio'] = $audSec;
             $sectionMid['audio'] = $audioMid;
-            $this->_log_std("generateAnswerSDP: [FORCE WRITE-STOP AUDIO PT=111]  忽略 Offer 原音频PT，强制声明 Opus=111, telephone-event=126, CN=127（保证和 RTP 转发翻译后的 PT 完全一致）\n");
+            if ($isWhep) {
+                $this->_log_std("generateAnswerSDP: [WHEP] selected offered Opus PT={$fixedOpusPT}\n");
+            } else {
+                $this->_log_std("generateAnswerSDP: [FORCE WRITE-STOP AUDIO PT=111]  忽略 Offer 原音频PT，强制声明 Opus=111, telephone-event=126, CN=127（保证和 RTP 转发翻译后的 PT 完全一致）\n");
+            }
         }
 
         $orderedSections = [];
