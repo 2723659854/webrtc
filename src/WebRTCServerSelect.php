@@ -619,10 +619,33 @@ class WebRTCServerSelect
             }
             $this->_gopCacheByStream[$streamId] = $gc;
         }
+
+        // 周期请求 IDR：防止浏览器编码器长时间不出关键帧，导致下游 FLV/RTMP 缓存整段超长 GOP
+        $periodicKfSec = (float)$this->periodicKeyFrameIntervalSec;
+        if (is_finite($periodicKfSec) && $periodicKfSec > 0) {
+            $gc = $this->_gopCacheByStream[$streamId] ?? $gc;
+            $lastPeriodic = (float)($gc['lastPeriodicPliTs'] ?? 0.0);
+            if ($now - $lastPeriodic >= $periodicKfSec) {
+                $gc['lastPeriodicPliTs'] = $now;
+                $this->_gopCacheByStream[$streamId] = $gc;
+                $this->sendPliToPublisher($streamId, true);
+            }
+        }
     }
 
     /** 关键帧定期重注兜底周期（秒）：实时直播 GOP=2s，保守 3s 重注一次防画面卡死 */
     private $_kfReinjectIntervalSec = 3.0;
+
+    /**
+     * 周期性向 publisher 请求 IDR 的间隔（秒），0=关闭。
+     * 用途：浏览器编码器稳态下 IDR 间隔可达 ~120s，FLV/RTMP 侧会缓存整段 GOP，
+     * 新观众连接时一次性收到数十秒历史帧（720p 解码不过来的直接表现就是卡顿）。
+     * 设为 2.0 可把 GOP 稳定在 2s（与 RTMP 侧 keyint=2s 对齐）。
+     * 取值：0（关闭）或 0.5~60 秒；非有限值/负数按 0 处理（不请求周期 IDR）。
+     * 由调用方直接赋值（本仓库 `webrtc.php` 设为 2；库默认 0=关闭）。
+     * @var float
+     */
+    public $periodicKeyFrameIntervalSec = 0.0;
 
     /** @var array<string,bool> _refreshPrimaryFromActualPacket 幂等标记，key="{$streamId}_{$kind}" */
     private $_primaryRefreshDone = [];
@@ -772,7 +795,21 @@ class WebRTCServerSelect
         unset($subscriber);
         $loop = $this->_dbgMediaPerf['loop'];
 
-
+        // 归因开关：WEBRTC_PERF_LOG=1 时每秒输出一次聚合性能快照（默认关闭，不影响线上行为）
+        if (getenv('WEBRTC_PERF_LOG') === '1') {
+            $this->_log_std('[PERF] ' . json_encode([
+                'loop' => [
+                    'ticks' => $loop['tickCount'],
+                    'gapAvgMs' => round($loop['gapSumUs'] / 1000 / max(1, (int)$loop['tickCount']), 3),
+                    'gapMaxMs' => round($loop['gapMaxUs'] / 1000, 3),
+                ],
+                'cpu' => $cpu,
+                'udpDrain' => $this->_dbgMediaPerf['udpDrain'] ?? null,
+                'publishers' => $publishers,
+                'pipeline' => $pipeline,
+                'bursts' => $this->_dbgMediaPerf['bursts'] ?? null,
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+        }
 
         $this->_dbgMediaPerf = ['lastReportAt'=>$now,'lastRusage'=>$usage,'loop'=>['lastAt'=>$now,'tickCount'=>0,'gapSumUs'=>0,'gapMaxUs'=>0]];
         foreach ($_obsSubscriberContinuity as $_obsClientId => $_obsLast) {
@@ -2062,15 +2099,23 @@ class WebRTCServerSelect
         $pubSsrc = 0;
         $pubSsrcSource = 'none';
         $publisher = [];
+        $bestSeen = -1.0;
         foreach ($this->clients as $id => $c) {
             $id = (int)$id;
             $m = isset($c['meta']) && is_array($c['meta']) ? $c['meta'] : [];
-            if (($m['streamId'] ?? '') === $streamId && ($m['role'] ?? '') === 'push') {
-                $pubId = $id;
-                $publisher = $c;
-                [$pubSsrc, $pubSsrcSource] = self::resolvePublisherVideoSsrc($c);
-                break;
+            if (($m['streamId'] ?? '') !== $streamId || ($m['role'] ?? '') !== 'push') {
+                continue;
             }
+            // 同一 streamId 可能残留被“顶掉”但尚未断开的旧推流端；
+            // 只向最近仍有媒体包到达的推流端请求关键帧，否则 PLI 会打到僵尸连接上。
+            $seen = (float)($c['lastSeenAt'] ?? 0.0);
+            if ($seen < $bestSeen) {
+                continue;
+            }
+            $bestSeen = $seen;
+            $pubId = $id;
+            $publisher = $c;
+            [$pubSsrc, $pubSsrcSource] = self::resolvePublisherVideoSsrc($c);
         }
         if ($pubId === null) return false;
 

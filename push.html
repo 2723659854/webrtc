@@ -65,6 +65,7 @@
         <div class="setting">
             <label>帧率</label>
             <select id="fpsSelect" onchange="onFpsChange()">
+                <option value="10">10</option>
                 <option value="15">15</option>
                 <option value="20">20</option>
                 <option value="25" selected>25</option>
@@ -74,11 +75,20 @@
         <div class="setting">
             <label>码率</label>
             <select id="bitrateSelect" onchange="onBitrateChange()">
+                <option value="400">400k</option>
                 <option value="500">500k</option>
                 <option value="1000">1000k</option>
                 <option value="1500">1500k</option>
                 <option value="2000" selected>2000k</option>
                 <option value="2500">2500k</option>
+            </select>
+        </div>
+        <div class="setting">
+            <label>降级策略</label>
+            <select id="degradationSelect" onchange="onDegradationChange()">
+                <option value="balanced" selected>平衡</option>
+                <option value="maintain-framerate">帧率优先</option>
+                <option value="maintain-resolution">分辨率优先</option>
             </select>
         </div>
     </div>
@@ -93,6 +103,9 @@
 <script>
     // ========== 配置 ==========
     let WIDTH = 854, HEIGHT = 480, FPS = 25, CUR_BITRATE_KBPS = 2000;
+    let CUR_DEGRADATION = 'balanced';
+    const DEGRADATION_LABELS = { 'balanced': '平衡', 'maintain-framerate': '帧率优先', 'maintain-resolution': '分辨率优先' };
+    function degradationLabel(v) { return DEGRADATION_LABELS[v] || v; }
     const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
     let ROOM_ID = 'stream_001';
     const stunHost = window.location.hostname;
@@ -322,6 +335,32 @@
         }
     }
 
+    async function onDegradationChange() {
+        const v = $('degradationSelect').value;
+        if (v !== 'balanced' && v !== 'maintain-framerate' && v !== 'maintain-resolution') return;
+        CUR_DEGRADATION = v;
+        const label = degradationLabel(v);
+        if (!pc || !isStreaming) {
+            log(`降级策略已设为：${label}（${v}），推流时生效`, 'info');
+            return;
+        }
+        let applied = 0;
+        const errors = [];
+        for (const s of pc.getSenders()) {
+            if (!s.track || s.track.kind !== 'video') continue;
+            try {
+                const params = s.getParameters();
+                params.degradationPreference = v;
+                await s.setParameters(params);
+                applied++;
+            } catch (e) {
+                errors.push(e.message || String(e));
+            }
+        }
+        if (applied > 0) log(`降级策略已切换为：${label}（${v}）`, 'success');
+        if (errors.length) log(`降级策略切换失败：${label}（${v}）（${errors.join('; ')}）`, 'warn');
+    }
+
     async function createPeerConnection(generation, socket) {
         if (generation !== connectionGeneration || ws !== socket || !localStream) return;
         const currentStream = localStream;
@@ -367,7 +406,8 @@
                 params.encodings[0].maxFramerate = FPS;
                 params.encodings[0].priority = 'high';
                 params.encodings[0].networkPriority = 'high';
-                try { params.degradationPreference = 'balanced'; } catch (_) {}
+                // 按页面下拉框选择设置降级策略：balanced 允许降分辨率，maintain-resolution 宁可降帧率
+                params.degradationPreference = CUR_DEGRADATION;
                 sender.setParameters(params).catch(e => {
                     if (generation === connectionGeneration && pc === currentPc && ws === socket) {
                         log(`设置编码参数失败: ${e.message}`, 'warn');
@@ -397,7 +437,6 @@
             if (state === 'connected' || state === 'completed') {
                 setStatus('✅ 推流中', 'streaming');
                 isStreaming = true;
-                startKeyFrameLoop(generation, currentPc);
             } else if (state === 'failed' || state === 'disconnected') {
                 setStatus('❌ ICE 断开', 'failed');
                 stopPush();
@@ -411,44 +450,11 @@
             if (state === 'connected') {
                 setStatus('✅ 推流中', 'streaming');
                 isStreaming = true;
-                startKeyFrameLoop(generation, currentPc);
             } else if (state === 'failed') {
                 setStatus('❌ 连接失败', 'failed');
                 stopPush();
             }
         };
-    }
-
-    // ========== 关键帧循环 ==========
-    let _keyFrameTimer = null;
-    // 强制每隔2秒生成一个关键帧，纠正画质
-    function startKeyFrameLoop(generation, currentPc) {
-        if (_keyFrameTimer) return;
-        let count = 0;
-        _keyFrameTimer = setInterval(async () => {
-            if (generation !== connectionGeneration || pc !== currentPc || !isStreaming) return;
-            const senders = currentPc.getSenders();
-            for (const s of senders) {
-                if (s.track && s.track.kind === 'video') {
-                    try {
-                        const params = s.getParameters();
-                        if (!params.encodings) params.encodings = [{}];
-                        // 切换 degradationPreference 强制编码器输出关键帧
-                        params.degradationPreference =
-                            params.degradationPreference === 'balanced' ? 'maintain-framerate' : 'balanced';
-                        await s.setParameters(params);
-                        count++;
-                        if (count % 10 === 1) log(`📸 强制关键帧 ×${count}`, 'info');
-                    } catch (e) {
-                        // 忽略 setParameters 可能的错误（部分浏览器限制频率）
-                    }
-                }
-            }
-        }, 2000); // 每 2 秒强制一次
-    }
-
-    function stopKeyFrameLoop() {
-        if (_keyFrameTimer) { clearInterval(_keyFrameTimer); _keyFrameTimer = null; }
     }
 
     // ========== 创建 Offer ==========
@@ -475,7 +481,6 @@
         connectionGeneration++;
         isStreaming = false;
         joined = false;
-        stopKeyFrameLoop();
 
         const oldWs = ws;
         ws = null;

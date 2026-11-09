@@ -14,6 +14,7 @@ $server = new WebRTCServer(8088, 8089, 3478, __DIR__."/debug.log");
 $server->publicIp = '127.0.0.1';
 // 是否开发模式
 $server->isDev = false;
+$server->periodicKeyFrameIntervalSec = 2;
 
 $rooms = [];
 
