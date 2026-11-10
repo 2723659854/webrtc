@@ -318,11 +318,19 @@ trait SDP
         $sdp .= "a=extmap-allow-mixed\r\n";
         $sdp .= "a=msid-semantic: WMS\r\n";
 
+        // ICE/DTLS 凭据必须出现在每一条 m-line 上：Chrome（>=M120 实测 M156）在
+        // 「audio + video + 尾随 m=application」这类多段 BUNDLE 场景下，若后续 m-line 缺少
+        // ice-ufrag/ice-pwd/fingerprint，会把该段视为独立的、无法建立的 transport，
+        // 进而在 answer 中把 m=application 置为 0（rejected）并踢出 BUNDLE，
+        // 导致 DataChannel 无法建立（SCTP 不启动、DC 直接 closed）。
+        $transportCreds = "";
+        $transportCreds .= "a=ice-ufrag:{$localIceUfrag}\r\n";
+        $transportCreds .= "a=ice-pwd:{$localIcePwd}\r\n";
+        $transportCreds .= "a=ice-options:trickle\r\n";
+        $transportCreds .= "a=fingerprint:sha-256 {$fingerprint}\r\n";
+
+        // setup 与 candidate 仍然只写在 BUNDLE 的首个 m-line 上，避免多段 setup 角色不一致。
         $transportBlock = "";
-        $transportBlock .= "a=ice-ufrag:{$localIceUfrag}\r\n";
-        $transportBlock .= "a=ice-pwd:{$localIcePwd}\r\n";
-        $transportBlock .= "a=ice-options:trickle\r\n";
-        $transportBlock .= "a=fingerprint:sha-256 {$fingerprint}\r\n";
         $transportBlock .= "a=setup:{$localSetup}\r\n";
         if ($localIP != "127.0.0.1") {
             if ($preferLoopback) {
@@ -360,6 +368,10 @@ trait SDP
         $_audioTrkId = ($customAudioTrack !== '') ? $customAudioTrack : "php-srtp-aud-1";
         $videoPTSet = [];
         $audioPTSet = [];
+        /** 接收端反馈（TWCC/REMB）协商结果，供调用方初始化反馈状态 */
+        $twccActive = false;
+        $twccExtId = 0;
+        $rembActive = false;
 
         $whepVideoPT = null;
         $whepVideoInfo = null;
@@ -410,6 +422,11 @@ trait SDP
             $vidSec .= "a=rtcp-rsize\r\n";
 
             $extLines = []; $rtcpFbLines = [];
+            /** TWCC/REMB 只在「本端作为接收方」（推流端 offer）时协商，且必须对方 offer 里确实宣告 */
+            $recvFeedbackAllowed = !$isWhep;
+            $twccOffered = false;
+            $twccExtId = 0;
+            $rembOffered = false;
             if ($videoSection !== '') {
                 $vlines = explode("\n", str_replace("\r\n", "\n", $videoSection));
                 foreach ($vlines as $vl) {
@@ -417,17 +434,37 @@ trait SDP
                     if (preg_match('/^a=extmap:(\d+)(?:\/\S+)?\s+(\S+)/i', $vl, $m)) {
                         $extUri = strtolower($m[2]);
                         if ($extUri === 'http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01'
-                            || $extUri === 'urn:ietf:params:rtp-hdrext:transport-wide-cc') continue;
+                            || $extUri === 'urn:ietf:params:rtp-hdrext:transport-wide-cc') {
+                            $twccOffered = true;
+                            if ($twccExtId <= 0) $twccExtId = (int)$m[1];
+                            continue;
+                        }
                         $extLines[(int)$m[1]] = $vl;
                     } elseif (preg_match('/^a=rtcp-fb:(\*|\d+)\s+nack\s+pli\s*$/i', $vl, $fbm)
                         && (!$isWhep || $fbm[1] === '*' || (int)$fbm[1] === $fixedVideoPT)) {
                         if (!isset($rtcpFbLines[$fixedVideoPT])) $rtcpFbLines[$fixedVideoPT] = [];
                         $rtcpFbLines[$fixedVideoPT][] = 'a=rtcp-fb:' . $fixedVideoPT . ' nack pli';
+                    } elseif (preg_match('/^a=rtcp-fb:(\*|\d+)\s+transport-cc\s*$/i', $vl)) {
+                        $twccOffered = true;
+                    } elseif (preg_match('/^a=rtcp-fb:(\*|\d+)\s+goog-remb\s*$/i', $vl)) {
+                        $rembOffered = true;
                     }
                 }
             }
+            $twccActive = $recvFeedbackAllowed
+                && $twccOffered
+                && $twccExtId > 0
+                && is_finite((float)$this->transportWideCcIntervalSec)
+                && (float)$this->transportWideCcIntervalSec > 0;
+            $rembActive = $recvFeedbackAllowed
+                && $rembOffered
+                && is_finite((float)$this->rembIntervalSec)
+                && (float)$this->rembIntervalSec > 0;
             ksort($extLines);
             foreach ($extLines as $l) $vidSec .= $l . "\r\n";
+            if ($twccActive) {
+                $vidSec .= "a=extmap:{$twccExtId} http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\n";
+            }
 
             $vidSec .= "a=msid:{$_streamId} {$_videoTrkId}\r\n";
             $mainSsrc = $serverVideoSsrc;
@@ -443,8 +480,19 @@ trait SDP
             if (!$isWhep || !empty($rtcpFbLines[$fixedVideoPT])) {
                 $vidSec .= "a=rtcp-fb:{$fixedVideoPT} nack pli\r\n";
             }
+            if ($twccActive) {
+                $vidSec .= "a=rtcp-fb:{$fixedVideoPT} transport-cc\r\n";
+            }
+            if ($rembActive) {
+                $vidSec .= "a=rtcp-fb:{$fixedVideoPT} goog-remb\r\n";
+            }
             $sections['video'] = $vidSec;
             $sectionMid['video'] = $videoMid;
+            if ($twccActive || $rembActive) {
+                $this->_log_std("generateAnswerSDP: [RECV FB] video PT={$fixedVideoPT} twcc=" . ($twccActive ? "ON(extId={$twccExtId})" : 'off')
+                    . " remb=" . ($rembActive ? 'ON' : 'off') . " (offer twcc=" . ($twccOffered ? 'yes' : 'no')
+                    . " remb=" . ($rembOffered ? 'yes' : 'no') . ")\n");
+            }
             if ($isWhep) {
                 $this->_log_std("generateAnswerSDP: [WHEP] selected offered H264 PT={$fixedVideoPT} fmtp={$fixedVideoInfo['fmtp']}\n");
             } else {
@@ -616,9 +664,13 @@ trait SDP
         $transportWritten = false;
         foreach ($orderedSections as $orderedSection) {
             $sdp .= $orderedSection['sdp'];
-            if (!$transportWritten && $orderedSection['accepted']) {
-                $sdp .= $transportBlock;
-                $transportWritten = true;
+            if ($orderedSection['accepted']) {
+                // 每条已接受的 m-line 都重复 ICE/DTLS 凭据（与 Chrome 自身生成的 SDP 一致）
+                $sdp .= $transportCreds;
+                if (!$transportWritten) {
+                    $sdp .= $transportBlock;
+                    $transportWritten = true;
+                }
             }
         }
 
@@ -633,6 +685,9 @@ trait SDP
             'audioPTs' => $audioPTSet,
             'serverVideoSsrc' => $serverVideoSsrc,
             'serverAudioSsrc' => $serverAudioSsrc,
+            'twccEnabled' => $twccActive,
+            'twccExtId' => $twccExtId,
+            'rembEnabled' => $rembActive,
             'localSsrcByKind' => [
                 'video' => $serverVideoSsrc,
                 'audio' => $serverAudioSsrc,

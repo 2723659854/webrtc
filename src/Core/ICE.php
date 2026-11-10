@@ -9,6 +9,18 @@ namespace Xiaosongshu\Webrtc\Core;
 trait ICE
 {
     /**
+     * 是否把一端的 ICE candidate 转发给同 streamId 的对端（P2P 直连场景需要）。
+     *
+     * SFU 部署下推流端与观看端都直连本服务，双方互为"远端"的只有本服务，
+     * 若仍然把推流端的 host/srflx 候选转发给观看端（或反向），浏览器会把这些
+     * 地址当成远端候选参与配对：候选对停在 waiting、requestsSent 一直为 0，
+     * 而本服务自己的候选反而不被检查，表现为"观看端先加入、推流端后启动时永远黑屏"。
+     *
+     * 默认 true 保持旧行为；SFU 业务在启动脚本里置 false（见 webrtc.php）。
+     */
+    public $relayPeerCandidates = true;
+
+    /**
      * 内部 helper：若首个 SRTP 包成功，触发 onMediaConnected（只触发一次/client）
      */
     public function _notifyMediaConnectedIfFirst(int $clientId, array $parsedRtpHeader): void
@@ -94,6 +106,7 @@ trait ICE
             'video' => $this->clients[$clientId]['serverVideoSsrc'],
             'audio' => $this->clients[$clientId]['serverAudioSsrc'],
         ];
+        $this->_twccInitFromAnswer((int)$clientId, $answerInfo);
 
         if (!empty($answerInfo['videoPTs']) && is_array($answerInfo['videoPTs'])) {
             $pvSmart = $this->_pickRealPrimaryPT($answerInfo['videoPTs'], 'video');
@@ -138,35 +151,9 @@ trait ICE
 
         $this->clients[$clientId]['remoteOfferSdp'] = $sdp;
 
-        if (isset($this->onOffer) && is_callable($this->onOffer)) {
-            try {
-                $_cb = $this->onOffer;
-                $_cb($clientId, $sdp, $localSdp, $this);
-            } catch (\Throwable $e) {
-                $this->_log_std("Client {$clientId} onOffer exception: " . $e->getMessage() . "\n");
-            }
-        }
-
-        $role = (string)$this->getClientMeta($clientId, 'role', '');
-        if ($role === 'push' && isset($this->onPublisher) && is_callable($this->onPublisher)) {
-            try {
-                $_cb = $this->onPublisher;
-                $_cb($clientId, [
-                    'streamId'   => (string)$this->getClientMeta($clientId, 'streamId', ''),
-                    'localSsrc'  => $this->clients[$clientId]['localSsrcByKind'] ?? [],
-                    'videoPTs'   => $this->clients[$clientId]['videoPTs'] ?? [],
-                    'audioPTs'   => $this->clients[$clientId]['audioPTs'] ?? [],
-                ], $this);
-            } catch (\Throwable $e) {
-                $this->_log_std("Client {$clientId} onPublisher exception: " . $e->getMessage() . "\n");
-            }
-        }
-
-        if ($role === 'play') {
-            $faststart = $this->kickFaststartForSubscriber((int)$clientId);
-            $this->_log_std("Client {$clientId} (play) offer 完成 → kickFaststart pliSent=" . ($faststart['pliSent'] ? 'yes' : 'no') . " gopBurst=" . (int)$faststart['gopBurst'] . "\n");
-        }
-
+        // 必须在 onOffer/onPublisher 之前登记 _sfuStreamConfig：
+        // 业务层通常在 onPublisher 里给已在等待的观众补发 SFU offer，
+        // 若配置晚于回调登记，这些观众永远拿不到 offer（先开观看页要刷新才能连上）。
         if ($role === 'push') {
             $streamId = (string)$this->getClientMeta($clientId, 'streamId', '');
             $pv = (int)($this->clients[$clientId]['primaryVideoPT'] ?? 0);
@@ -214,6 +201,35 @@ trait ICE
                 . " msidStreamId={$cfg['msidStreamId']}\n");
 
             $this->_defaultSfuRelayPublisherOfferToSubscribers($clientId, $sdp);
+        }
+
+        if (isset($this->onOffer) && is_callable($this->onOffer)) {
+            try {
+                $_cb = $this->onOffer;
+                $_cb($clientId, $sdp, $localSdp, $this);
+            } catch (\Throwable $e) {
+                $this->_log_std("Client {$clientId} onOffer exception: " . $e->getMessage() . "\n");
+            }
+        }
+
+        $role = (string)$this->getClientMeta($clientId, 'role', '');
+        if ($role === 'push' && isset($this->onPublisher) && is_callable($this->onPublisher)) {
+            try {
+                $_cb = $this->onPublisher;
+                $_cb($clientId, [
+                    'streamId'   => (string)$this->getClientMeta($clientId, 'streamId', ''),
+                    'localSsrc'  => $this->clients[$clientId]['localSsrcByKind'] ?? [],
+                    'videoPTs'   => $this->clients[$clientId]['videoPTs'] ?? [],
+                    'audioPTs'   => $this->clients[$clientId]['audioPTs'] ?? [],
+                ], $this);
+            } catch (\Throwable $e) {
+                $this->_log_std("Client {$clientId} onPublisher exception: " . $e->getMessage() . "\n");
+            }
+        }
+
+        if ($role === 'play') {
+            $faststart = $this->kickFaststartForSubscriber((int)$clientId);
+            $this->_log_std("Client {$clientId} (play) offer 完成 → kickFaststart pliSent=" . ($faststart['pliSent'] ? 'yes' : 'no') . " gopBurst=" . (int)$faststart['gopBurst'] . "\n");
         }
     }
 
@@ -310,6 +326,7 @@ trait ICE
      */
     private function _defaultRelayCandidate(int $srcId, array $msg): void
     {
+        if (empty($this->relayPeerCandidates)) return;
         $srcRole = (string)$this->getClientMeta($srcId, 'role', '');
         $streamId = (string)$this->getClientMeta($srcId, 'streamId', '');
         if ($streamId === '' || !in_array($srcRole, ['push','play'], true)) return;

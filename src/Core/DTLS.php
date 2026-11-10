@@ -591,7 +591,10 @@ trait DTLS
                                 $this->_log_std("Client {$clientId} encryption pinned: variant={$variantName} nonceMode=$nm aadVer=" . bin2hex($vVer) . " aadLen=$vLen\n");
                             }
                             $this->_log_std("Client {$clientId} decryptDTLSRecord SUCCESS variant={$variantName}, ncIdx={$ncIdx}[$nm], vcIdx={$vcIdx}(" . bin2hex($vVer) . "), lcIdx={$lcIdx}({$vLen})\n");
-                            $this->_log_std("  plaintext len=" . strlen($plaintext) . " hex=" . bin2hex($plaintext) . "\n");
+                            /** 明文 hex 只在调试模式构造：生产路径每包可省 2×包长 的十六进制转换 */
+                            if ($this->isDev) {
+                                $this->_log_std("  plaintext len=" . strlen($plaintext) . " hex=" . bin2hex($plaintext) . "\n");
+                            }
                             return $plaintext;
                         }
                         if ($loggedVariantErrors < 8 && !$variantLoggedThis) {
@@ -1123,10 +1126,30 @@ trait DTLS
 
         $this->clients[$clientId]['serverFlight'] = $combined;
 
+        /**
+         * 逐条发送 ServerFlight。
+         *
+         * 历史实现每条 record 后固定 usleep(10000)。实测（Windows / PHP 8.4）该等待没有任何
+         * 协议语义：它既不是在等对端 flight，也不是必需的节奏控制——一次握手 ServerFlight 只有
+         * 4 条 record（83/819/354/25 字节，合计 ~1.3KB，均 < MTU）；而本文件的重传路径
+         * （handleClientHello 的 cached ServerFlight）本来就是把这 4 条拼成**一个** UDP 包发出去的，
+         * 说明连发不会破坏互通。
+         *
+         * 代价实测（Windows 开发机，300 次）：usleep(1/100/1000/5000/10000) 的 P50 全部约 15ms，
+         * 即 Windows 定时器粒度会把任何微睡眠向上取整到 ~15.6ms；一次握手 4 次 ≈ 60ms 纯等待。
+         * Linux 走 nanosleep，P50 接近参数值，usleep(10ms)×4 ≈ 40ms。
+         *
+         * 因此这里改成**默认不等待**（0），由调用方按需设置 dtlsServerFlightPacingMicros 开启节奏控制；
+         * 不写死任何微睡眠数字，关闭时热路径零开销（仅一次属性读取与比较）。
+         */
+        $paceMicros = (float)$this->dtlsServerFlightPacingMicros;
+        $recordCount = count($records);
         foreach ($records as $i => $record) {
             $this->sendUDP($clientId, $record);
             $this->_log_std("Client {$clientId} Record {$i} sent (len=" . strlen($record) . ")\n");
-            usleep(10000);
+            if ($paceMicros > 0 && $i < $recordCount - 1) {
+                usleep((int)round($paceMicros));
+            }
         }
 
         $this->_log_std("Client {$clientId} ServerFlight sent (combined len=" . strlen($combined) . ")\n");

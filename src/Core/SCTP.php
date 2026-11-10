@@ -19,7 +19,10 @@ trait SCTP
     private function handleSCTP($clientId, $payload)
     {
         if (strlen($payload) < 12) return;
-        $this->_log_std("Client {$clientId} SCTP IN (len=" . strlen($payload) . "): " . bin2hex($payload) . "\n");
+        /** 整包 hex 只在调试模式构造，生产路径零开销 */
+        if ($this->isDev) {
+            $this->_log_std("Client {$clientId} SCTP IN (len=" . strlen($payload) . "): " . bin2hex($payload) . "\n");
+        }
 
         $srcPort = (ord($payload[0]) << 8) | ord($payload[1]);
         $dstPort = (ord($payload[2]) << 8) | ord($payload[3]);
@@ -43,6 +46,20 @@ trait SCTP
                 'tsn_reorder_queued' => [],
                 'peer_rwnd' => 0,
                 'my_rwnd' => 4194304,
+                /** DataChannel 分片重组 / 限流 / 背压状态 */
+                'dc_rx' => [],
+                'dc_rx_dropped' => 0,
+                'dc_in_rate' => null,
+                'dc_in_rate_ts' => 0.0,
+                'dc_in_msg' => null,
+                'dc_in_msg_ts' => 0.0,
+                'dc_out_rate' => null,
+                'dc_out_rate_ts' => 0.0,
+                'dc_tx_unacked_bytes' => 0,
+                'dc_tx_last_send_at' => 0.0,
+                'peer_cum_ack' => 0,
+                'dc_sack_sent_at' => 0.0,
+                'dc_rl_log_at' => 0.0,
             ];
         }
         $s = &$this->clients[$clientId]['sctp'];
@@ -86,6 +103,11 @@ trait SCTP
                 /** 处理sctp数据 */
                 case 0: // DATA chunk
                     $this->handleSCTP_DATA($clientId, $s, $chunkBody, $chunkFlags);
+                    /**
+                     * 每个 DATA 包都回 SACK：Chrome 初始拥塞窗口很小（约 10 个 MTU），
+                     * 延迟确认会让 100KB 消息在中途卡死并触发重传。
+                     * 单个 SACK 只有 28 字节 SCTP（加密后 ~65 字节），成本远低于一次媒体帧。
+                     */
                     $sackNeeded = true;
                     break;
                 /** 处理浏览器的ack消息 */
@@ -124,6 +146,7 @@ trait SCTP
             if ($sack !== false) {
                 /** 把ack放到队列最前面，防止疯狂重发 */
                 array_unshift($replies, $sack);
+                $s['dc_sack_sent_at'] = microtime(true);
             }
         }
 
@@ -258,11 +281,14 @@ trait SCTP
         $this->sendUDP($clientId, $record);
         $this->clients[$clientId]['dtlsSeq'] = $seq + 1;
 
-        $this->_log_std("Client {$clientId} sendSCTPOverDTLS: 1 RECORD ONLY keyDir=sRFC nonceMode=$nonceMode aadVer=" . bin2hex($aadVersion) .
-            " epoch=$epoch seq=$seq recLen=" . strlen($record) . " pt=$ptLen" . ($svPass ? ' ✓SELFT' : ' ⚠FAIL_SELFTEST') . "\n");
-        $this->_log_std("  plaintext=" . bin2hex($sctpPacket) . "\n");
-        $this->_log_std("  key=" . bin2hex($key) . " iv(" . strlen($ivFix) . ")=" . bin2hex($ivFix) . " nonce(12)=" . bin2hex($nonce) . "\n");
-        $this->_log_std("  aad(13)=" . bin2hex($ad) . " tag=" . bin2hex($tag) . "\n");
+        /** 整包明文 / 密钥 / nonce / aad / tag 的 hex 只在调试模式构造 */
+        if ($this->isDev) {
+            $this->_log_std("Client {$clientId} sendSCTPOverDTLS: 1 RECORD ONLY keyDir=sRFC nonceMode=$nonceMode aadVer=" . bin2hex($aadVersion) .
+                " epoch=$epoch seq=$seq recLen=" . strlen($record) . " pt=$ptLen" . ($svPass ? ' ✓SELFT' : ' ⚠FAIL_SELFTEST') . "\n");
+            $this->_log_std("  plaintext=" . bin2hex($sctpPacket) . "\n");
+            $this->_log_std("  key=" . bin2hex($key) . " iv(" . strlen($ivFix) . ")=" . bin2hex($ivFix) . " nonce(12)=" . bin2hex($nonce) . "\n");
+            $this->_log_std("  aad(13)=" . bin2hex($ad) . " tag=" . bin2hex($tag) . "\n");
+        }
     }
 
     /**
@@ -621,7 +647,8 @@ trait SCTP
      */
     private function handleSCTP_SACK($clientId, &$s, $body)
     {
-        if (strlen($body) < 16) return;
+        /** SACK 固定体长 12 字节：cumTSN(4) + rwnd(4) + numGap(2) + numDup(2) */
+        if (strlen($body) < 12) return;
         $cumTSN = (ord($body[0]) << 24) | (ord($body[1]) << 16) | (ord($body[2]) << 8) | ord($body[3]);
         $advRwnd = (ord($body[4]) << 24) | (ord($body[5]) << 16) | (ord($body[6]) << 8) | ord($body[7]);
         $gaps = (ord($body[8]) << 8) | ord($body[9]);
@@ -629,6 +656,11 @@ trait SCTP
         $cumTSN++;
         $this->_log_std("Client {$clientId} SCTP SACK: cum_ack=" . ($cumTSN - 1) . " next_expected=$cumTSN rwnd=$advRwnd gaps=$gaps dups=$dups\n");
         $s['peer_rwnd'] = $advRwnd;
+        /** 累积确认前进 => 之前发出的数据都已被对端收下，释放背压计数 */
+        if ($cumTSN > (int)($s['peer_cum_ack'] ?? 0)) {
+            $s['peer_cum_ack'] = $cumTSN;
+            $s['dc_tx_unacked_bytes'] = 0;
+        }
     }
 
     /**
@@ -649,22 +681,19 @@ trait SCTP
 
     /**
      * SCTP_DATA
-     * @param $clientId
-     * @param $s
-     * @param $body
-     * @param $chunkFlags
-     * @return void
+     * 按 B/E 标志重组分片；一条大消息只在完整收齐后投递一次。
+     * @return bool true = 本条消息已完成（或已判定丢弃），需要回 SACK
      */
     private function handleSCTP_DATA($clientId, &$s, $body, $chunkFlags)
     {
-        if (strlen($body) < 16) return;
+        if (strlen($body) < 12) return false;
         $tsn = (ord($body[0]) << 24) | (ord($body[1]) << 16) | (ord($body[2]) << 8) | ord($body[3]);
         $sid = (ord($body[4]) << 8) | ord($body[5]);
         $ssn = (ord($body[6]) << 8) | ord($body[7]);
         $ppid = (ord($body[8]) << 24) | (ord($body[9]) << 16) | (ord($body[10]) << 8) | ord($body[11]);
         $userData = substr($body, 12);
 
-        $this->_log_std("Client {$clientId} SCTP DATA: tsn=$tsn sid=$sid ssn=$ssn ppid=$ppid len=" . strlen($userData) . "\n");
+        $this->_log_std("Client {$clientId} SCTP DATA: tsn=$tsn sid=$sid ssn=$ssn ppid=$ppid flags=$chunkFlags len=" . strlen($userData) . "\n");
 
         $expected = $s['peer_next_tsn'];
         if ($tsn === $expected) {
@@ -673,33 +702,156 @@ trait SCTP
             $s['peer_next_tsn'] = $tsn + 1;
         } else {
             $this->_log_std("Client {$clientId} SCTP DATA dup tsn=$tsn (expected=$expected); skip delivery.\n");
+            return false;
+        }
+
+        $isBegin = ($chunkFlags & 0x02) !== 0;
+        $isEnd   = ($chunkFlags & 0x01) !== 0;
+
+        /** 清理超时的半包，避免异常客户端长期占用内存 */
+        $this->_dcPurgeStaleReassembly($s);
+
+        /** 完整单包消息（绝大多数聊天消息走这里） */
+        if ($isBegin && $isEnd) {
+            $this->_dcDispatchMessage($clientId, $s, $sid, $ppid, $userData);
+            return true;
+        }
+
+        /** 分片起点 */
+        if ($isBegin) {
+            if (strlen($userData) > (int)$this->dcMaxMessageBytes) {
+                $this->_dcLogSampled($s, "Client {$clientId} DC DROP sid=$sid reason=single_fragment_too_large len=" . strlen($userData) . "\n");
+                return true;
+            }
+            $s['dc_rx'][$sid] = [
+                'data' => $userData,
+                'ppid' => $ppid,
+                'ssn'  => $ssn,
+                'ts'   => microtime(true),
+            ];
+            return false;
+        }
+
+        /** 中间片 / 结束片：必须有匹配的起点 */
+        if (!isset($s['dc_rx'][$sid]) || (int)$s['dc_rx'][$sid]['ssn'] !== (int)$ssn) {
+            $s['dc_rx_dropped'] = (int)($s['dc_rx_dropped'] ?? 0) + 1;
+            $this->_dcLogSampled($s, "Client {$clientId} DC DROP sid=$sid ssn=$ssn reason=orphan_fragment\n");
+            return $isEnd;
+        }
+
+        if (strlen($s['dc_rx'][$sid]['data']) + strlen($userData) > (int)$this->dcMaxMessageBytes) {
+            unset($s['dc_rx'][$sid]);
+            $s['dc_rx_dropped'] = (int)($s['dc_rx_dropped'] ?? 0) + 1;
+            $this->_dcLogSampled($s, "Client {$clientId} DC DROP sid=$sid reason=message_too_large\n");
+            return true;
+        }
+
+        $s['dc_rx'][$sid]['data'] .= $userData;
+        if (!$isEnd) return false;
+
+        $message = $s['dc_rx'][$sid]['data'];
+        $messagePpid = (int)$s['dc_rx'][$sid]['ppid'];
+        unset($s['dc_rx'][$sid]);
+
+        $this->_dcDispatchMessage($clientId, $s, $sid, $messagePpid, $message);
+        return true;
+    }
+
+    /**
+     * 将一条完整 DataChannel 消息分发给业务回调（含限流）
+     */
+    private function _dcDispatchMessage($clientId, &$s, $sid, $ppid, $payload)
+    {
+        $len = strlen($payload);
+        if ($len > (int)$this->dcMaxMessageBytes) {
+            $s['dc_rx_dropped'] = (int)($s['dc_rx_dropped'] ?? 0) + 1;
+            $this->_dcLogSampled($s, "Client {$clientId} DC DROP sid=$sid reason=message_too_large len=$len\n");
+            return;
+        }
+
+        /** 应用层限流：字节令牌桶 + 条数令牌桶 */
+        if (!$this->_dcBucketTake($s, 'dc_in_rate', (float)$this->dcInMaxBytesPerSec, max($len, (int)$this->dcInMaxBytesPerSec), $len)) {
+            $s['dc_rx_dropped'] = (int)($s['dc_rx_dropped'] ?? 0) + 1;
+            $this->_dcLogSampled($s, "Client {$clientId} DC DROP sid=$sid reason=in_rate_bytes len=$len\n");
+            return;
+        }
+        if (!$this->_dcBucketTake($s, 'dc_in_msg', (float)$this->dcInMaxMessagesPerSec, max(1.0, (float)$this->dcInMaxMessagesPerSec), 1)) {
+            $s['dc_rx_dropped'] = (int)($s['dc_rx_dropped'] ?? 0) + 1;
+            $this->_dcLogSampled($s, "Client {$clientId} DC DROP sid=$sid reason=in_rate_msgs\n");
             return;
         }
 
         switch ($ppid) {
             case 50: // WebRTC DCEP
-                $this->handleDCEP($clientId, $s, $sid, $userData);
+                $this->handleDCEP($clientId, $s, $sid, $payload);
                 break;
             case 51: // WebRTC String (UTF-8)
-                $text = $userData;
-                $this->deliverDataChannelMessage($clientId, $sid, $text, false);
-                break;
             case 56: // WebRTC String partial reliable
-                $text = $userData;
-                $this->deliverDataChannelMessage($clientId, $sid, $text, false);
+                $this->deliverDataChannelMessage($clientId, $sid, $payload, false);
                 break;
             case 52: // Deprecated: string with empty "channel" framing
-                $text = substr($userData, 2);
-                $this->deliverDataChannelMessage($clientId, $sid, $text, false);
+                $this->deliverDataChannelMessage($clientId, $sid, substr($payload, 2), false);
                 break;
             case 53: // binary
             case 57: // binary PR
-                $this->deliverDataChannelMessage($clientId, $sid, $userData, true);
+                $this->deliverDataChannelMessage($clientId, $sid, $payload, true);
                 break;
             default:
                 $this->_log_std("Client {$clientId} SCTP DATA unknown PPID=$ppid; skip.\n");
                 break;
         }
+    }
+
+    /**
+     * 清理超时未收齐的重组缓冲
+     */
+    private function _dcPurgeStaleReassembly(&$s)
+    {
+        if (empty($s['dc_rx'])) return;
+        $timeout = (float)$this->dcReassemblyTimeoutSec;
+        if ($timeout <= 0.0) $timeout = 10.0;
+        $now = microtime(true);
+        foreach ($s['dc_rx'] as $sid => $buf) {
+            if (($now - (float)($buf['ts'] ?? 0.0)) > $timeout) {
+                unset($s['dc_rx'][$sid]);
+                $s['dc_rx_dropped'] = (int)($s['dc_rx_dropped'] ?? 0) + 1;
+            }
+        }
+    }
+
+    /**
+     * 通用令牌桶（速率<=0 表示不限制）
+     */
+    private function _dcBucketTake(&$s, string $key, float $rate, float $burst, float $cost): bool
+    {
+        if ($rate <= 0.0) return true;
+        if ($burst < $cost) $burst = $cost;
+        $tk = $key;
+        $ts = $key . '_ts';
+        $now = microtime(true);
+        if (!isset($s[$tk]) || $s[$tk] === null) {
+            $s[$tk] = $burst;
+            $s[$ts] = $now;
+        }
+        $elapsed = $now - (float)$s[$ts];
+        if ($elapsed > 0.0) {
+            $s[$tk] = min($burst, (float)$s[$tk] + $elapsed * $rate);
+            $s[$ts] = $now;
+        }
+        if ((float)$s[$tk] + 1e-9 < $cost) return false;
+        $s[$tk] = (float)$s[$tk] - $cost;
+        return true;
+    }
+
+    /**
+     * 限流/背压日志采样：每个客户端最多 1 条/秒，避免日志本身成为负担
+     */
+    private function _dcLogSampled(&$s, string $msg): void
+    {
+        $now = microtime(true);
+        if (($now - (float)($s['dc_rl_log_at'] ?? 0.0)) < 1.0) return;
+        $s['dc_rl_log_at'] = $now;
+        $this->_log_std($msg);
     }
 
     /**
@@ -717,34 +869,93 @@ trait SCTP
 
     /**
      * 使用sctp协议发送数据
+     * 按 MTU 分片，每个 DATA chunk 的 16 位长度字段都保证 < 65536；
+     * 同时做消息大小 / 速率限制与最小背压。
      * @param $clientId
      * @param $sid
      * @param $userData
      * @param $ppid
-     * @return void
+     * @return bool true=已全部发出；false=被大小/限流/背压拦截
      */
     private function sendDataOverSCTP($clientId, $sid, $userData, $ppid)
     {
+        if (!isset($this->clients[$clientId]['sctp'])) return false;
         $s = &$this->clients[$clientId]['sctp'];
-        $tsn = $s['my_next_tsn']++;
+
+        $len = strlen($userData);
+        $maxMsg = (int)$this->dcMaxMessageBytes;
+        if ($maxMsg > 0 && $len > $maxMsg) {
+            $this->_dcLogSampled($s, "Client {$clientId} DC SEND DROP reason=message_too_large len=$len\n");
+            return false;
+        }
+
+        /** 最小背压：未确认字节超过上限时丢弃新消息（无出站队列，不累积内存） */
+        $now = microtime(true);
+        $lastSendAt = (float)($s['dc_tx_last_send_at'] ?? 0.0);
+        if ($lastSendAt > 0.0 && ($now - $lastSendAt) > 5.0) {
+            $s['dc_tx_unacked_bytes'] = 0;
+        }
+        $pending = (int)($s['dc_tx_unacked_bytes'] ?? 0);
+        $cap = (int)$this->dcOutMaxBufferedBytes;
+        if ($cap > 0 && $pending > $cap) {
+            $this->_dcLogSampled($s, "Client {$clientId} DC SEND DROP reason=tx_backpressure pending=$pending cap=$cap\n");
+            return false;
+        }
+
+        if (!$this->_dcBucketTake($s, 'dc_out_rate', (float)$this->dcOutMaxBytesPerSec, max($len, (int)$this->dcOutMaxBytesPerSec), $len)) {
+            $this->_dcLogSampled($s, "Client {$clientId} DC SEND DROP reason=out_rate_bytes len=$len\n");
+            return false;
+        }
+
+        $fragBytes = (int)$this->sctpMaxFragmentBytes;
+        if ($fragBytes < 256) $fragBytes = 256;
+        if ($fragBytes > 60000) $fragBytes = 60000;
+
         if (!isset($s['my_stream_ssn'][$sid])) $s['my_stream_ssn'][$sid] = 0;
-        $ssn = $s['my_stream_ssn'][$sid]++;
-        if ($s['my_stream_ssn'][$sid] > 0xFFFF) $s['my_stream_ssn'][$sid] = 0;
-        $body = pack('NnnN', $tsn, $sid, $ssn, $ppid) . $userData;
-        $chunkLen = 4 + strlen($body);
-        $flags = 0x03;
-        $chunk = "\x00" . chr($flags) . pack('n', $chunkLen) . $body;
-        $chunk = $this->padTo4($chunk);
+        $ssn = (int)$s['my_stream_ssn'][$sid];
+        $s['my_stream_ssn'][$sid] = ($ssn + 1) & 0xFFFF;
 
         $sack = $this->buildSCTP_SACK($s);
-        $chunks = [];
-        if ($sack !== false) $chunks[] = $this->padTo4($sack);
-        $chunks[] = $chunk;
+        $sackChunk = ($sack !== false) ? $this->padTo4($sack) : null;
 
-        $packet = $this->joinSCTPChunksIntoPacket($s, $chunks);
-        if (strlen($packet) === 0) return;
-        $this->_log_std("Client {$clientId} SCTP SEND DATA: tsn=$tsn sid=$sid ssn=$ssn ppid=$ppid flags=$flags len=" . strlen($userData) . " totallen=" . strlen($packet) . "\n");
-        $this->sendSCTPOverDTLS($clientId, $packet);
+        $offset = 0;
+        $first = true;
+        do {
+            $piece = substr($userData, $offset, $fragBytes);
+            $pieceLen = strlen($piece);
+            $offset += $pieceLen;
+            $isEnd = ($offset >= $len);
+            $flags = ($first ? 0x02 : 0x00) | ($isEnd ? 0x01 : 0x00);
+
+            $tsn = (int)$s['my_next_tsn'];
+            $s['my_next_tsn'] = ($tsn + 1) & 0xFFFFFFFF;
+
+            $body = pack('NnnN', $tsn, $sid, $ssn, $ppid) . $piece;
+            $chunkLen = 4 + strlen($body);
+            if ($chunkLen > 65535) {
+                /** 理论上不会发生（fragBytes 已封顶 60000），保留保险 */
+                $this->_log_std("Client {$clientId} DC SEND ABORT reason=chunk_len_overflow len=$chunkLen\n");
+                return false;
+            }
+            $chunk = $this->padTo4("\x00" . chr($flags) . pack('n', $chunkLen) . $body);
+
+            $chunks = [];
+            /** SACK 只随第一个分片发一次，避免每个分片都带一遍 */
+            if ($first && $sackChunk !== null) $chunks[] = $sackChunk;
+            $chunks[] = $chunk;
+
+            $packet = $this->joinSCTPChunksIntoPacket($s, $chunks);
+            if (strlen($packet) === 0) return false;
+            if ($this->isDev) {
+                $this->_log_std("Client {$clientId} SCTP SEND DATA: tsn=$tsn sid=$sid ssn=$ssn ppid=$ppid flags=$flags len=$pieceLen totallen=" . strlen($packet) . "\n");
+            }
+            $this->sendSCTPOverDTLS($clientId, $packet);
+            $first = false;
+        } while ($offset < $len);
+
+        $s['dc_tx_unacked_bytes'] = $pending + $len;
+        $s['dc_tx_last_send_at'] = microtime(true);
+        return true;
     }
 
     /**
@@ -815,12 +1026,15 @@ trait SCTP
      */
     private function deliverDataChannelMessage($clientId, $sid, $payload, $isBinary)
     {
-        if ($isBinary) {
-            $preview = "binary(" . strlen($payload) . "B) " . bin2hex(substr($payload, 0, min(16, strlen($payload))));
-        } else {
-            $preview = "text(" . strlen($payload) . "B): " . $payload;
+        /** 只做有界预览，避免 100KB 消息被整段拼进日志 */
+        if ($this->isDev) {
+            if ($isBinary) {
+                $preview = "binary(" . strlen($payload) . "B) " . bin2hex(substr($payload, 0, min(16, strlen($payload))));
+            } else {
+                $preview = "text(" . strlen($payload) . "B): " . substr($payload, 0, 128);
+            }
+            $this->_log_std("Client {$clientId} DataChannel RECV sid=$sid $preview\n");
         }
-        $this->_log_std("Client {$clientId} DataChannel RECV sid=$sid $preview\n");
 
         if (is_callable($this->onmessage)) {
             try {

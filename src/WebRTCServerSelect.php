@@ -4,6 +4,7 @@ namespace Xiaosongshu\Webrtc;
 
 use Xiaosongshu\Webrtc\Core\DTLS;
 use Xiaosongshu\Webrtc\Core\ICE;
+use Xiaosongshu\Webrtc\Core\RTCPFeedback;
 use Xiaosongshu\Webrtc\Core\SCTP;
 use Xiaosongshu\Webrtc\Core\SDP;
 use Xiaosongshu\Webrtc\Core\STUN;
@@ -33,7 +34,7 @@ use Xiaosongshu\Webrtc\Core\WebSocket;
 class WebRTCServerSelect
 {
 
-    use DTLS,SCTP,SDP,STUN,UDP,WebSocket,ICE;
+    use DTLS,SCTP,SDP,STUN,UDP,WebSocket,ICE,RTCPFeedback;
 
     /**
      * @var string
@@ -156,6 +157,7 @@ class WebRTCServerSelect
             'video' => $this->clients[$clientId]['serverVideoSsrc'],
             'audio' => $this->clients[$clientId]['serverAudioSsrc'],
         ];
+        $this->_twccInitFromAnswer((int)$clientId, $answerInfo);
 
         if (!empty($answerInfo['videoPTs']) && is_array($answerInfo['videoPTs'])) {
             $pvSmart = $this->_pickRealPrimaryPT($answerInfo['videoPTs'], 'video');
@@ -270,8 +272,10 @@ class WebRTCServerSelect
         return ['clientId' => $clientId, 'sdp' => $localSdp];
     }
 
-    /** 开发模式 */
-    public  $isDev = true;
+    /** 开发模式：true=输出全部逐包/握手日志；false=仅保留错误级日志（生产默认） */
+    public  $isDev = false;
+    /** isDev=false 时是否仍输出错误级日志（默认 true，保证可排障） */
+    public  $logErrorsAlways = true;
     /** ws服务器 */
     private $wsServer;
 
@@ -647,6 +651,15 @@ class WebRTCServerSelect
      */
     public $periodicKeyFrameIntervalSec = 0.0;
 
+    /**
+     * DTLS ServerFlight 逐条记录之间的节奏等待（微秒），0 = 不等待（默认）。
+     * 由调用方直接赋值；仅在对端/网络确实需要放慢握手突发时才设 >0。
+     * 注意平台差异：Windows 的 usleep 会被定时器粒度向上取整到 ~15.6ms，
+     * 因此同一个值在 Windows 上明显更贵；Linux（nanosleep）接近设定值。
+     * @var float
+     */
+    public $dtlsServerFlightPacingMicros = 0.0;
+
     /** @var array<string,bool> _refreshPrimaryFromActualPacket 幂等标记，key="{$streamId}_{$kind}" */
     private $_primaryRefreshDone = [];
     /** @var array<string,array{pt:int,ssrc:int}> 推流端最近确认的实际 RTP PT/SSRC，key="{$streamId}_{$kind}" */
@@ -654,10 +667,32 @@ class WebRTCServerSelect
     /** @var array<string,float> VP8 关键帧 TS 去重，key=streamId，value=RTP timestamp(90kHz) */
     private $_vp8LastKfTsByStream = [];
 
+    /**
+     * 热路径性能诊断总开关，默认关闭。
+     * 关闭时：不做逐包 hrtime 计时、不做 NAL/FU 帧统计、不做 padding 诊断、不累计
+     * _dbgMediaPerf、不做每秒 getrusage/JSON 汇总，媒体转发路径只剩必要工作。
+     * 打开后：上述统计恢复，且 [PERF] JSON 输出仍额外受 WEBRTC_PERF_LOG=1 控制。
+     * @var bool
+     */
+    public $perfDiagEnabled = false;
+
+    /**
+     * DataChannel / SCTP 热路径保护参数（均可由调用方直接赋值）
+     * 与 WebRTCServer 保持同步；详见 WebRTCServer 中同名属性注释。
+     */
+    public $sctpMaxFragmentBytes = 1100;
+    public $dcMaxMessageBytes = 1048576;
+    public $dcInMaxBytesPerSec = 4194304;
+    public $dcInMaxMessagesPerSec = 200;
+    public $dcOutMaxBytesPerSec = 4194304;
+    public $dcOutMaxBufferedBytes = 1048576;
+    public $dcReassemblyTimeoutSec = 10.0;
+
     private $_dbgMediaPerf = [];
 
     private function _dbgPerfPipelineStage(string $streamId, string $stage, int $elapsedNs, int $bytes = 0, int $targetCount = 0): void
     {
+        if (!$this->perfDiagEnabled) return;
         if (!isset($this->_dbgMediaPerf['pipeline'][$streamId])) {
             $this->_dbgMediaPerf['pipeline'][$streamId] = ['streamId'=>$streamId,'stages'=>[]];
         }
@@ -675,6 +710,7 @@ class WebRTCServerSelect
 
     private function _dbgPerfPublisherInbound(int $clientId, string $streamId, string $kind, int $bytes, int $timestamp, int $seq, int $marker): void
     {
+        if (!$this->perfDiagEnabled) return;
         if (!isset($this->_dbgMediaPerf['publishers'][$clientId])) {
             $this->_dbgMediaPerf['publishers'][$clientId] = ['clientId'=>$clientId,'streamId'=>$streamId,'video'=>['packetCount'=>0,'markerCount'=>0,'distinctTimestampCount'=>0,'seqGap'=>0,'bytes'=>0,'lastTimestamp'=>null,'lastSeq'=>null],'audio'=>['packetCount'=>0,'bytes'=>0]];
         }
@@ -698,6 +734,7 @@ class WebRTCServerSelect
 
     private function _dbgPerfSubscriberVideo(int $clientId, int $bytes, int $rewriteNs, int $protectNs, int $sendNs, bool $ok, ?int $seq = null, ?int $timestamp = null, int $marker = 0): void
     {
+        if (!$this->perfDiagEnabled) return;
         if (!isset($this->_dbgMediaPerf['subscribers'][$clientId])) {
             $this->_dbgMediaPerf['subscribers'][$clientId] = ['clientId'=>$clientId,'packetCount'=>0,'bytes'=>0,'markers'=>0,'seqGaps'=>0,'timestampBackwards'=>0,'sendFailure'=>0,'rewriteNsSum'=>0,'rewriteNsMax'=>0,'protectNsSum'=>0,'protectNsMax'=>0,'sendNsSum'=>0,'sendNsMax'=>0,'lastSeq'=>null,'lastTimestamp'=>null];
         }
@@ -727,6 +764,7 @@ class WebRTCServerSelect
 
     private function _dbgPerfBurstEvent(string $streamId, string $type): void
     {
+        if (!$this->perfDiagEnabled) return;
         if (!isset($this->_dbgMediaPerf['bursts'][$streamId])) $this->_dbgMediaPerf['bursts'][$streamId] = ['streamId'=>$streamId,'idrCount'=>0,'pliCount'=>0,'gopBurstCount'=>0];
         $key = $type . 'Count';
         $this->_dbgMediaPerf['bursts'][$streamId][$key]++;
@@ -734,6 +772,7 @@ class WebRTCServerSelect
 
     private function _dbgPerfLoopIteration(float $now): void
     {
+        if (!$this->perfDiagEnabled) return;
         if (!isset($this->_dbgMediaPerf['loop'])) {
             $this->_dbgMediaPerf['loop'] = ['lastAt'=>$now,'tickCount'=>0,'gapSumUs'=>0,'gapMaxUs'=>0];
             $this->_dbgMediaPerf['lastReportAt'] = $now;
@@ -995,7 +1034,7 @@ class WebRTCServerSelect
      */
     public function _log_std(string $msg)
     {
-        if ($this->isDev){
+        if ($this->isDev || ($this->logErrorsAlways && self::_looksLikeErrorLog($msg))){
             fwrite(STDOUT, $msg);
             if ($this->logFp === null && $this->logFile) {
                 $this->logFp = @fopen($this->logFile, 'a');
@@ -1007,6 +1046,18 @@ class WebRTCServerSelect
                 @fwrite($this->logFp, $msg);
             }
         }
+    }
+
+    /**
+     * 粗粒度错误级判定：生产模式（isDev=false）下仍写出错误/异常/失败日志。
+     * 仅用于日志过滤，不影响任何协议或媒体逻辑。
+     */
+    private static function _looksLikeErrorLog(string $msg): bool
+    {
+        foreach (['FAIL', 'ERROR', 'EXCEPTION', 'WARNING', 'FATAL'] as $kw) {
+            if (stripos($msg, $kw) !== false) return true;
+        }
+        return false;
     }
 
     /**
@@ -2335,8 +2386,7 @@ class WebRTCServerSelect
             $this->_log_std("Client {$clientId} sendDataChannel: SCTP not ESTABLISHED; drop.\n");
             return false;
         }
-        $this->sendDataOverSCTP($clientId, $sid, $message, $ppid);
-        return true;
+        return $this->sendDataOverSCTP($clientId, $sid, $message, $ppid);
     }
 
     /**

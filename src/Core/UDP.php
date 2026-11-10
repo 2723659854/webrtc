@@ -124,7 +124,7 @@ trait UDP
             return false;
         }
 
-        $_dbgRewriteStarted = $kind === 'video' ? hrtime(true) : 0;
+        $_dbgRewriteStarted = ($kind === 'video' && $this->perfDiagEnabled) ? hrtime(true) : 0;
         $_dbgRewriteNs = 0;
         $fwRtp = $rtp;
         $publisherTimestamp = substr($rtp, 4, 4);
@@ -225,9 +225,9 @@ trait UDP
         $fwRtp[6] = $publisherTimestamp[2];
         $fwRtp[7] = $publisherTimestamp[3];
 
-        if ($kind === 'video') $_dbgRewriteNs = (int)(hrtime(true) - $_dbgRewriteStarted);
+        if ($kind === 'video' && $this->perfDiagEnabled) $_dbgRewriteNs = (int)(hrtime(true) - $_dbgRewriteStarted);
 
-        if ($kind === 'video') {
+        if ($kind === 'video' && $this->perfDiagEnabled) {
             static $_dbgVideoTimeline = [];
             if (!isset($_dbgVideoTimeline[$clientId])) {
                 $_dbgVideoTimeline[$clientId] = ['packets'=>0,'markers'=>0,'prevTs'=>null,'prevOutSeq'=>null];
@@ -243,7 +243,7 @@ trait UDP
             unset($_dbgTimeline);
         }
 
-        if ($kind === 'video') {
+        if ($kind === 'video' && $this->perfDiagEnabled) {
             static $_dbgVideoSummary = [];
             if (!isset($_dbgVideoSummary[$clientId])) {
                 $_dbgVideoSummary[$clientId] = ['packets'=>0,'timestamps'=>[],'markers'=>0,'timestampBackwards'=>0,'seqGaps'=>0,'firstTs'=>null,'lastTs'=>null,'prevTs'=>null,'prevOutSeq'=>null];
@@ -267,7 +267,7 @@ trait UDP
             unset($_dbgSummary);
         }
 
-        if ($kind === 'audio' || $kind === 'video') {
+        if (($kind === 'audio' || $kind === 'video') && $this->perfDiagEnabled) {
             static $_dbgRtpExtmapRouteCount = [];
             $_dbgRouteKey = $clientId . ':' . $kind;
             $_dbgRtpExtmapRouteCount[$_dbgRouteKey] = (int)($_dbgRtpExtmapRouteCount[$_dbgRouteKey] ?? 0);
@@ -316,7 +316,7 @@ trait UDP
             }
         }
 
-        try {
+        if ($this->perfDiagEnabled) try {
             $_dbgPaddingB0 = ord($fwRtp[0]);
             $_dbgPaddingPBit = ($_dbgPaddingB0 >> 5) & 0x1;
             $_dbgPaddingCc = $_dbgPaddingB0 & 0x0F;
@@ -347,28 +347,28 @@ trait UDP
         } catch (\Throwable $_dbgPaddingError) {
         }
 
-        $_dbgProtectStarted = $kind === 'video' ? hrtime(true) : 0;
+        $_dbgProtectStarted = ($kind === 'video' && $this->perfDiagEnabled) ? hrtime(true) : 0;
 
         try {
             $srtpOut = $srtpTx->protect($fwRtp);
         } catch (\Throwable $e) {
 
-            if ($kind === 'video' && method_exists($this, '_dbgPerfSubscriberVideo')) $this->_dbgPerfSubscriberVideo($clientId, 0, $_dbgRewriteNs, (int)(hrtime(true) - $_dbgProtectStarted), 0, false);
+            if ($kind === 'video' && $this->perfDiagEnabled && method_exists($this, '_dbgPerfSubscriberVideo')) $this->_dbgPerfSubscriberVideo($clientId, 0, $_dbgRewriteNs, (int)(hrtime(true) - $_dbgProtectStarted), 0, false);
 
             $this->_log_std("Client {$clientId} protectAndSendRtp protect() FAIL: " . $e->getMessage() . "\n");
             return false;
         }
         if (!is_string($srtpOut) || strlen($srtpOut) === 0) {
 
-            if ($kind === 'video' && method_exists($this, '_dbgPerfSubscriberVideo')) $this->_dbgPerfSubscriberVideo($clientId, 0, $_dbgRewriteNs, (int)(hrtime(true) - $_dbgProtectStarted), 0, false);
+            if ($kind === 'video' && $this->perfDiagEnabled && method_exists($this, '_dbgPerfSubscriberVideo')) $this->_dbgPerfSubscriberVideo($clientId, 0, $_dbgRewriteNs, (int)(hrtime(true) - $_dbgProtectStarted), 0, false);
 
             $this->_log_std("Client {$clientId} protectAndSendRtp protect() FAIL: empty output\n");
             return false;
         }
 
-        $_dbgProtectedAt = $kind === 'video' ? hrtime(true) : 0;
+        $_dbgProtectedAt = ($kind === 'video' && $this->perfDiagEnabled) ? hrtime(true) : 0;
         $sent = $this->sendUDP($clientId, $srtpOut);
-        if ($kind === 'video' && method_exists($this, '_dbgPerfSubscriberVideo')) {
+        if ($kind === 'video' && $this->perfDiagEnabled && method_exists($this, '_dbgPerfSubscriberVideo')) {
             $_dbgSentAt = hrtime(true);
 
             $_obsOutSeq = unpack('n', substr($fwRtp, 2, 2))[1];
@@ -715,9 +715,9 @@ trait UDP
 
             if (!$isRtcp) {
 
-                $_dbgUnprotectStarted = hrtime(true);
+                if ($this->perfDiagEnabled) $_dbgUnprotectStarted = hrtime(true);
                 $plainRtp = $srtpRx->unprotect($data);
-                $_dbgUnprotectNs = (int)(hrtime(true) - $_dbgUnprotectStarted);
+                if ($this->perfDiagEnabled) $_dbgUnprotectNs = (int)(hrtime(true) - $_dbgUnprotectStarted);
             }
 
             if ($plainRtcp !== null && $plainRtcp !== false && is_string($plainRtcp) && strlen($plainRtcp) >= 8) {
@@ -850,8 +850,23 @@ trait UDP
                 'hdrLen'=>$hdrLen,'payloadLen'=>strlen($plainRtp)-$hdrLen,
             ];
 
+            /* TWCC：记录 transport-wide 序号到达时间并按节奏回发 RTCP 反馈（仅推流端且 SDP 已协商时） */
+            if ((string)(($c['meta']['role'] ?? '')) === 'push' && isset($c['_twcc'])
+                && method_exists($this, '_twccOnRtpArrival')) {
+                try {
+                    $this->_twccOnRtpArrival((int)$targetClientId, $plainRtp, microtime(true));
+                } catch (\Throwable $_eTwcc) {
+                    static $_twccWarned = [];
+                    if (empty($_twccWarned[$targetClientId])) {
+                        $_twccWarned[$targetClientId] = true;
+                        $this->_log_std("Client {$targetClientId} TWCC onRtpArrival exception: " . $_eTwcc->getMessage() . "\n");
+                    }
+                }
+            }
+
             $_dbgMeta = is_array($c['meta'] ?? null) ? $c['meta'] : [];
-            $_dbgIsPublisherVideo = (($_dbgMeta['role'] ?? '') === 'push')
+            $_dbgIsPublisherVideo = $this->perfDiagEnabled
+                && (($_dbgMeta['role'] ?? '') === 'push')
                 && (isset($c['videoPTs'][$pt])
                     || (int)($c['incomingSsrcByKind']['video'] ?? 0) === $ssrcVal
                     || !isset($c['audioPTs'][$pt]));
@@ -914,7 +929,7 @@ trait UDP
                 $this->_log_std("Client {$targetClientId} SRTP-IN ok pt={$pt} ssrc={$ssrcVal} seq={$seq} ts={$ts} len=" . strlen($plainRtp) . " (this line every 3000 pkts)\n");
             }
             $c['_srtpInCounter'] = $srtpInCounter + 1;
-            $this->clients[$targetClientId] = $c;
+            /* $c 是 $this->clients[$id] 的引用（见上方 $c = &$this->clients[...]），无需回写整个数组 */
 
             $_metaForRefresh = isset($c['meta']) && is_array($c['meta']) ? $c['meta'] : [];
             $_hasMetaForRefresh = !empty($_metaForRefresh);
@@ -964,17 +979,17 @@ trait UDP
             }
             if ($hasMeta && ($meta['role'] ?? '') === 'push' && !empty($meta['streamId']) && method_exists($this, 'forwardRtpToAllSubscribers')) {
 
-                if (isset($_dbgUnprotectNs) && method_exists($this, '_dbgPerfPipelineStage')) {
+                if ($this->perfDiagEnabled && isset($_dbgUnprotectNs) && method_exists($this, '_dbgPerfPipelineStage')) {
                     $this->_dbgPerfPipelineStage((string)$meta['streamId'], 'publisherUnprotect', (int)$_dbgUnprotectNs, strlen($data), 0);
                 }
-                $_dbgForwardStarted = hrtime(true);
+                $_dbgForwardStarted = $this->perfDiagEnabled ? hrtime(true) : 0;
 
                 $_dbgKindMedia = isset($c['videoPTs'][$pt]) ? 'video' : (isset($c['audioPTs'][$pt]) ? 'audio' : 'unknown');
-                if (method_exists($this, '_dbgPerfPublisherInbound')) $this->_dbgPerfPublisherInbound((int)$targetClientId, (string)$meta['streamId'], $_dbgKindMedia, strlen($plainRtp), (int)$ts, (int)$seq, ($b1 >> 7) & 1);
+                if ($this->perfDiagEnabled && method_exists($this, '_dbgPerfPublisherInbound')) $this->_dbgPerfPublisherInbound((int)$targetClientId, (string)$meta['streamId'], $_dbgKindMedia, strlen($plainRtp), (int)$ts, (int)$seq, ($b1 >> 7) & 1);
 
                 $n = $this->forwardRtpToAllSubscribers((string)$meta['streamId'], $plainRtp, $targetClientId);
 
-                if (method_exists($this, '_dbgPerfPipelineStage')) {
+                if ($this->perfDiagEnabled && method_exists($this, '_dbgPerfPipelineStage')) {
                     $this->_dbgPerfPipelineStage((string)$meta['streamId'], 'forwardTotal', (int)(hrtime(true) - $_dbgForwardStarted), strlen($plainRtp), (int)$n);
                 }
 
@@ -983,7 +998,7 @@ trait UDP
                     $this->_log_std("Client {$targetClientId} SFU forward streamId={$meta['streamId']} -> {$n} subscriber(s) (this line every 3000 pkts)\n");
                 }
                 $c['_sfuFwdCounter'] = $sfuFwdCounter + 1;
-                $this->clients[$targetClientId] = $c;
+                /* $c 是引用，无需回写整个数组 */
                 return true;
             }
 

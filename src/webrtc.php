@@ -1,21 +1,29 @@
 <?php
 /**
- * @purpose WebRTC SDK 启动示例
+ * @purpose webrtc桥接rtmp测试客户端
  * @author yanglong
- * @command php start.php
+ * @command php webrtc.php
+ * @note 此文件需要安装插件 composer require xiaosongshu/flv2mp4
  */
 
 use Xiaosongshu\Flv2mp4\Flv\WebRtcFlvRelay;
 use Xiaosongshu\Flv2mp4\Opus\OpusWorkerClient;
 use Xiaosongshu\Webrtc\WebRTCServer;
 
-require_once __DIR__."/vendor/autoload.php";
+require_once __DIR__ . "/vendor/autoload.php";
 
-$server = new WebRTCServer(8088, 8089, 3478, __DIR__."/debug.log",__DIR__."/webrtc");
+$server = new WebRTCServer(8088, 8089, 3478, __DIR__ . "/debug.log",__DIR__."/webrtc");
 // 设置公网ip，当对外提供服务的时候务必设置；本机多网卡调试可用 WEBRTC_PUBLIC_IP 覆盖
 $server->publicIp = getenv('WEBRTC_PUBLIC_IP') ?: '127.0.0.1';
-// 是否开发模式
-$server->isDev = true;
+// 是否开发模式（逐包/握手日志）。默认关闭，避免生产路径同步写 STDOUT；
+// 需要排障时设 WEBRTC_DEBUG_LOG=1。关闭时错误级日志仍会输出（$logErrorsAlways，默认 true）。
+$server->isDev = getenv('WEBRTC_DEBUG_LOG') === '1';
+
+// 本项目是 SFU：推流端与观看端都只跟本服务做 ICE/DTLS，双方不直连。
+// 因此关闭"把一端的 ICE candidate 转发给同房间对端"的 P2P 兼容逻辑，
+// 否则推流端后启动时，观看端会把推流端的 host/srflx 候选当成远端候选，
+// 候选对停在 waiting（requestsSent=0），本服务自己的候选不被检查 → 永久黑屏。
+$server->relayPeerCandidates = false;
 
 // 周期关键帧（IDR）请求间隔，单位秒；0 = 关闭（不发周期性 PLI，保持旧行为）。
 // 2s 与 RTMP/HLS 直播常规 keyint=2s 对齐，避免浏览器 ~120s 超长 GOP 把下游回放拖长。
@@ -103,12 +111,16 @@ $server->onJoin = function (int $clientId, array $msg, WebRTCServer $srv, &$hand
             $srv->_log_std("[onJoin] streamId={$streamId} 新推流端 {$clientId} 顶掉旧的 {$oldId}\n");
         }
         $rooms[$streamId]['pushId'] = $clientId;
+        // DataChannel 聊天显示名（onmessage 里读取）
+        $srv->setClientMeta($clientId, 'label', '主播');
         $msg = "[onJoin] client={$clientId} 作为推流端加入房间 streamId={$streamId}\n";
         echo $msg;
         $srv->_log_std($msg);
     } else {
         $rooms[$streamId]['subscribers'][$clientId] = true;
         $srv->setClientMeta($clientId, 'clientOffer', !empty($msg['clientOffer']));
+        // DataChannel 聊天显示名（onmessage 里读取）
+        $srv->setClientMeta($clientId, 'label', '观众');
         $pushId     = $rooms[$streamId]['pushId'];
         $viewerCnt  = count($rooms[$streamId]['subscribers']);
         $msg = "[onJoin] client={$clientId} 作为观众加入房间 streamId={$streamId} 当前观众数={$viewerCnt} 推流端=" . ($pushId === null ? '无' : $pushId) . "\n";
@@ -145,7 +157,11 @@ $server->onPublisher = function (int $clientId, array $ctx, WebRTCServer $srv) u
         . " videoPTs=[" . implode(',', $videoPTs) . "] audioPTs=[" . implode(',', $audioPTs) . "]\n";
     $srv->_log_std($_msg);
 
-    if ($streamId !== '') {
+    $hasMediaTracks = !empty($videoPTs) || !empty($audioPTs);
+    if ($streamId !== '' && !$hasMediaTracks) {
+        $srv->_log_std("[ws-flv] 纯 DataChannel 推流（无音视频轨）client={$clientId} streamId={$streamId}，跳过 FLV 中继\n");
+    }
+    if ($streamId !== '' && $hasMediaTracks) {
         foreach ($flvRelays as $oldClientId => $relay) {
             if ($relay->streamId() === $streamId && $oldClientId !== $clientId) {
                 $closeFlvRelay((int)$oldClientId, $srv);
@@ -461,8 +477,7 @@ $server->onmessage = function (string $message, int $clientId, WebRTCServer $srv
     if ($streamId !== '' && isset($rooms[$streamId])) {
         $targets = $srv->getClientsInStreamRoom($streamId, [$clientId]);
         if (!empty($targets)) {
-            $chatMsg = ($role === 'push' ? '【主播】' : '【观众】')
-                . "{$label}(id{$clientId}): {$trimMsg}";
+            $chatMsg = "【{$label}】id{$clientId}: {$trimMsg}";
             $sent = $srv->broadcastDataChannel($targets, $chatMsg);
             $srv->_log_std("[onmessage] 房间聊天 streamId={$streamId} targets=" . count($targets) . " sent={$sent} msg=\"{$chatMsg}\"\n");
         }
